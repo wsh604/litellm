@@ -9,7 +9,7 @@ from litellm.proxy._types import (
 from litellm.proxy.auth.user_api_key_auth import user_api_key_auth
 from .WLog import log
 
-TAG = "models"
+TAG = "wuban models"
 router = APIRouter()
 model_list: Callable
 
@@ -20,7 +20,7 @@ def set_model_list_def(model_list_from_proxy: Callable):
 @router.get(
     "/api/models",
     dependencies=[Depends(user_api_key_auth)],
-    tags=["model management"]
+    tags=[TAG]
 )
 async def models(user_api_key_dict: UserAPIKeyAuth = Depends(user_api_key_auth)):
     originData = await model_list(user_api_key_dict)
@@ -51,7 +51,7 @@ async def models(user_api_key_dict: UserAPIKeyAuth = Depends(user_api_key_auth))
 @router.get(
     "/api/endpoints",
     dependencies=[Depends(user_api_key_auth)],
-    tags=["model management"]
+    tags=[TAG]
 )
 async def endpoints(user_api_key_dict: UserAPIKeyAuth = Depends(user_api_key_auth)):
     models_dict = await models(user_api_key_dict)
@@ -70,7 +70,7 @@ async def endpoints(user_api_key_dict: UserAPIKeyAuth = Depends(user_api_key_aut
 @router.get(
     "/api/keys",
     dependencies=[Depends(user_api_key_auth)],
-    tags=["model management"]
+    tags=[TAG]
 )
 async def keys(name):
     return {
@@ -82,7 +82,7 @@ async def keys(name):
 @router.post(
     "/api/files/images",
     dependencies=[Depends(user_api_key_auth)],
-    tags=["model management"]
+    tags=[TAG]
 )
 async def image():
     return ""
@@ -91,7 +91,7 @@ async def image():
 @router.post(
     "/api/files",
     dependencies=[Depends(user_api_key_auth)],
-    tags=["model management"]
+    tags=[TAG]
 )
 async def file():
     return ""
