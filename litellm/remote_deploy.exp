@@ -1,0 +1,53 @@
+#!/usr/bin/expect -f
+
+# 设置超时时间（秒）
+set timeout 300
+
+# 获取参数
+set host [lindex $argv 0]
+set user [lindex $argv 1]
+set password [lindex $argv 2]
+set remote_dir [lindex $argv 3]
+set archive [lindex $argv 4]
+set compose_file [lindex $argv 5]
+
+# 创建远程目录
+spawn ssh -o StrictHostKeyChecking=no $user@$host "mkdir -p $remote_dir"
+expect {
+    "password:" { send "$password\r" }
+    timeout { exit 1 }
+}
+expect eof
+
+# 传输文件
+spawn scp -o StrictHostKeyChecking=no $archive $user@$host:$remote_dir/
+expect {
+    "password:" { send "$password\r" }
+    timeout { exit 1 }
+}
+expect eof
+
+# 执行部署命令
+spawn ssh -o StrictHostKeyChecking=no $user@$host
+expect {
+    "password:" { send "$password\r" }
+    timeout { exit 1 }
+}
+
+expect "$"
+send "cd $remote_dir\r"
+expect "$"
+send "tar -xzf $archive\r"
+expect "$"
+send "docker-compose -f $compose_file down\r"
+expect "$"
+send "docker-compose -f $compose_file up -d\r"
+expect "$"
+send "rm $archive\r"
+expect "$"
+send "exit\r"
+expect eof
+
+# 检查是否有错误
+catch wait result
+exit [lindex $result 3] 

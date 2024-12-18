@@ -217,6 +217,7 @@ from litellm.proxy.pass_through_endpoints.pass_through_endpoints import (
 from litellm.proxy.pass_through_endpoints.pass_through_endpoints import (
     router as pass_through_router,
 )
+from litellm.proxy.wuban.librechat_endpoints import librechat_router
 from litellm.proxy.rerank_endpoints.endpoints import router as rerank_router
 from litellm.proxy.route_llm_request import route_request
 from litellm.proxy.spend_tracking.spend_management_endpoints import (
@@ -1502,7 +1503,7 @@ class ProxyConfig:
             litellm.default_in_memory_ttl = cache_params["default_in_memory_ttl"]
 
         if "default_redis_ttl" in cache_params:
-            litellm.default_redis_ttl = cache_params["default_in_redis_ttl"]
+            litellm.default_redis_ttl = cache_params["default_redis_ttl"]
 
         litellm.cache = Cache(**cache_params)
 
@@ -2052,6 +2053,7 @@ class ProxyConfig:
             init_guardrails_v2(
                 all_guardrails=guardrails_v2, config_file_path=config_file_path
             )
+
         return router, router.get_model_list(), general_settings
 
     def get_model_info_with_id(self, model, db_model=False) -> RouterModelInfo:
@@ -2455,7 +2457,7 @@ class ProxyConfig:
         - Check if model id's in router already
         - If not, add to router
         """
-        global llm_router, llm_model_list, master_key, general_settings
+        global llm_router, llm_model_list, master_key, general_settings, master_key, user_custom_auth
 
         try:
             if master_key is None or not isinstance(master_key, str):
@@ -3196,7 +3198,8 @@ async def startup_event():
             proxy_logging_obj=proxy_logging_obj,
         )
 
-
+    if prisma_client is not None:
+        librechat_router.prisma_client = prisma_client
 #### API ENDPOINTS ####
 @router.get(
     "/v1/models", dependencies=[Depends(user_api_key_auth)], tags=["model management"]
@@ -3244,7 +3247,6 @@ async def model_list(
         ],
         object="list",
     )
-
 
 @router.post(
     "/v1/chat/completions",
@@ -9188,31 +9190,6 @@ async def get_routes():
     return {"routes": routes}
 
 
-#### TEST ENDPOINTS ####
-# @router.get(
-#     "/token/generate",
-#     dependencies=[Depends(user_api_key_auth)],
-#     include_in_schema=False,
-# )
-# async def token_generate():
-#     """
-#     Test endpoint. Admin-only access. Meant for generating admin tokens with specific claims and testing if they work for creating keys, etc.
-#     """
-#     # Initialize AuthJWTSSO with your OpenID Provider configuration
-#     from fastapi_sso import AuthJWTSSO
-
-#     auth_jwt_sso = AuthJWTSSO(
-#         issuer=os.getenv("OPENID_BASE_URL"),
-#         client_id=os.getenv("OPENID_CLIENT_ID"),
-#         client_secret=os.getenv("OPENID_CLIENT_SECRET"),
-#         scopes=["litellm_proxy_admin"],
-#     )
-
-#     token = auth_jwt_sso.create_access_token()
-
-#     return {"token": token}
-
-
 @router.on_event("shutdown")
 async def shutdown_event():
     global prisma_client, master_key, user_custom_auth, user_custom_key_generate
@@ -9263,6 +9240,7 @@ def cleanup_router_config_variables():
 set_model_list(model_list)
 
 app.include_router(router)
+app.include_router(librechat_router)
 app.include_router(rerank_router)
 app.include_router(fine_tuning_router)
 app.include_router(vertex_router)

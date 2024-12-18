@@ -1,0 +1,57 @@
+#!/usr/bin/expect -f
+
+# 获取参数
+set host [lindex $argv 0]
+set user [lindex $argv 1]
+set pass [lindex $argv 2]
+set remote_dir [lindex $argv 3]
+set archive [lindex $argv 4]
+set compose_file [lindex $argv 5]
+
+# 设置更长的超时时间（30分钟）
+set timeout 1800
+
+# 创建远程目录
+spawn ssh -o StrictHostKeyChecking=no $user@$host mkdir -p $remote_dir
+expect "password:"
+send "$pass\r"
+expect eof
+
+# 上传文件
+spawn scp -o StrictHostKeyChecking=no $archive $user@$host:$remote_dir/
+expect "password:"
+send "$pass\r"
+expect eof
+
+# 执行远程命令
+spawn ssh -o StrictHostKeyChecking=no $user@$host
+expect "password:"
+send "$pass\r"
+expect "*#"
+
+# 进入目录并解压
+send "cd $remote_dir\r"
+expect "*#"
+send "tar xzf $archive\r"
+expect "*#"
+send "rm -f $archive\r"
+expect "*#"
+
+# 如果存在docker-compose，先停止并删除旧容器
+send "if \[ -f \"$compose_file\" \]; then docker-compose -f \"$compose_file\" down; fi\r"
+expect "*#"
+
+# 启动新容器（使用 -d 参数在后台运行）
+send "docker-compose -f \"$compose_file\" up -d --build\r"
+expect {
+    timeout { puts "Docker构建超时"; exit 1 }
+    "*#"
+}
+
+# 检查容器状态
+send "docker-compose -f \"$compose_file\" ps\r"
+expect "*#"
+
+# 退出
+send "exit\r"
+expect eof 

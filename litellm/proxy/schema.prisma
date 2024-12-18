@@ -5,6 +5,7 @@ datasource client {
 
 generator client {
   provider = "prisma-client-py"
+  recursive_type_depth = -1
 }
 
 // Budget / Rate Limits for an org
@@ -128,6 +129,13 @@ model LiteLLM_UserTable {
     invitations_created LiteLLM_InvitationLink[] @relation("CreatedBy")
     invitations_updated LiteLLM_InvitationLink[] @relation("UpdatedBy")
     invitations_user    LiteLLM_InvitationLink[] @relation("UserId")
+
+    // 以下兼容支持 LibreChat
+    conversations   Conversation[]
+    messages        Message[]
+    files           File[]
+    assistants      Assistant[]
+    agents          Agent[]
 }
 
 // Generate Tokens for Proxy
@@ -288,4 +296,151 @@ model LiteLLM_AuditLog {
   object_id          String      // id of the object being audited. This can be the key id, team id, user id, model id
   before_value       Json?       // value of the row 
   updated_values     Json?       // value of the row after change
+}
+
+// 以下表格用于兼容支持 LibreChat
+
+// 助手表
+model Assistant {
+  id                    String    @id @default(uuid())
+  assistantId          String    @unique  // OpenAI Assistant ID
+  user                  LiteLLM_UserTable      @relation(fields: [userId], references: [user_id])
+  userId                String
+  
+  name                  String
+  description           String?
+  instructions          String?
+  metadata             Json?
+  tools                String[]  // 工具名称数组
+  model                 String
+  fileIds              String[]  // 文件ID数组
+  
+  avatarPath           String?   // 头像文件路径
+  avatarSource         String?   // 头像来源
+  conversationStarters String[]
+  appendCurrentDatetime Boolean  @default(false)
+
+  createdAt            DateTime  @default(now())
+  updatedAt            DateTime  @updatedAt
+
+  @@map("assistants")
+}
+
+// 代理表
+model Agent {
+  id              String    @id @default(uuid())
+  user            LiteLLM_UserTable      @relation(fields: [userId], references: [user_id])
+  userId          String
+  
+  name            String
+  description     String?
+  instructions    String?
+  context         String?
+  avatar          String?
+  modelParameters Json?
+  tools           String[]
+  isCollaborative Boolean   @default(false)
+  projectIds      String[]
+
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+
+  @@map("agents")
+}
+
+// 会话表
+model Conversation {
+  id              String    @id @default(uuid())
+  conversationId  String    @unique
+  user            LiteLLM_UserTable      @relation(fields: [userId], references: [user_id])
+  userId          String
+  
+  title           String?
+  model           String?
+  modelDisplayLabel String?
+  endpoint        String?   // 添加 endpoint 字段
+  endpointType    String?   // 添加 endpointType 字段
+  messages        Message[]
+  tags            ConversationTag[]
+  
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+
+  @@map("conversation")
+}
+
+// 消息表
+model Message {
+  id              String    @id @default(uuid())
+  messageId       String    @unique
+  conversation    Conversation @relation(fields: [conversationId], references: [conversationId])
+  conversationId  String
+  user            LiteLLM_UserTable @relation(fields: [userId], references: [user_id])
+  userId          String
+  
+  text            String
+  sender          String    // "user" 或 "assistant"
+  parentMessageId String? 
+  isCreatedByUser Boolean   @default(false)
+  model           String?
+  endpoint        String?
+  files           MessageFile[]
+  
+  error          String?   // 添加错误信息字段
+  unfinished     Boolean   @default(false)  // 消息是否未完成
+  isEdited       Boolean   @default(false)  // 消息是否被编辑过
+  
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+
+  @@map("message")
+}
+
+// 文件表
+model File {
+  id              String    @id @default(uuid())
+  fileId          String    @unique
+  user            LiteLLM_UserTable @relation(fields: [userId], references: [user_id])
+  userId          String
+  name            String
+  type            String
+  size            Int
+  url             String?
+  messages        MessageFile[]
+  
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+
+  @@map("file")
+}
+
+// 消息-文件关联表
+model MessageFile {
+  id          String    @id @default(uuid())
+  message     Message   @relation(fields: [messageId], references: [messageId])
+  messageId   String
+  file        File     @relation(fields: [fileId], references: [fileId])
+  fileId      String
+
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@unique([messageId, fileId])
+  @@map("message_file")
+}
+
+// 会话标签表
+model ConversationTag {
+  id              String    @id @default(uuid())
+  conversation    Conversation @relation(fields: [conversationId], references: [conversationId])
+  conversationId  String
+  
+  tag             String
+  color           String?
+
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+
+  @@unique([conversationId, tag])
+  @@map("conversation_tag")
 }
