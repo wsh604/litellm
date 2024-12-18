@@ -1,5 +1,5 @@
 model_list:
-  - model_name: gpt-3.5-turbo
+  - model_name: openAI/gpt-3.5-turbo
     litellm_params:
       model: together_ai/mistralai/Mixtral-8x7B-Instruct-v0.1
       api_key: os.environ/TOGETHER_API_KEY
@@ -9,10 +9,16 @@ model_list:
       temperature: 0.7
       max_tokens: 100
       top_p: 0.9
-  - model_name: deepseek
+      owned_by: openAI
+  - model_name: deepseek/deepseek/deepseek-chat
     litellm_params:
       model: deepseek/deepseek-chat
       api_key: sk-354c3ec4f73542f681d15f2369d9fa95
+  - model_name: deepseek/deepseek/deepseek-code
+    litellm_params:
+      model: deepseek/deepseek-code-test
+      api_key: sk-354c3ec4f73542f681d15f2369d9fa95
+
 litellm_settings:
   drop_params: True
   num_retries: 5
