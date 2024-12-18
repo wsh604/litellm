@@ -37,3 +37,4 @@ general_settings:
   master_key: sk-1234
   store_model_in_db: True
   fallback_strategy: "retry"
+  port: 4000
