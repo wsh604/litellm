@@ -1,6 +1,5 @@
-#不用
 model_list:
-  - model_name: openAI
+  - model_name: openAI/gpt-3.5-turbo
     litellm_params:
       model: together_ai/mistralai/Mixtral-8x7B-Instruct-v0.1
       api_key: os.environ/TOGETHER_API_KEY
@@ -10,9 +9,14 @@ model_list:
       temperature: 0.7
       max_tokens: 100
       top_p: 0.9
-  - model_name: deepseek-deepseek-chat
+      owned_by: openAI
+  - model_name: deepseek/deepseek/deepseek-chat
     litellm_params:
-      model: deepseek-deepseek-chat
+      model: deepseek/deepseek-chat
+      api_key: sk-354c3ec4f73542f681d15f2369d9fa95
+  - model_name: deepseek/deepseek/deepseek-code
+    litellm_params:
+      model: deepseek/deepseek-code-test
       api_key: sk-354c3ec4f73542f681d15f2369d9fa95
 
 litellm_settings:
@@ -20,7 +24,7 @@ litellm_settings:
   num_retries: 5
   request_timeout: 30
   telemetry: False
-  default_headers: 
+  default_headers:
     "Content-Type": "application/json"
 
 router_settings:
@@ -29,8 +33,7 @@ router_settings:
   retry_on_failure: true
   timeout: 30
 
-general_settings: 
+general_settings:
   master_key: sk-1234
   store_model_in_db: True
   fallback_strategy: "retry"
-  port: 4000
