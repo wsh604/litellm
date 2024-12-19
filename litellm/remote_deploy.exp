@@ -1,9 +1,6 @@
 #!/usr/bin/expect -f
 
-# 设置超时时间（秒）
-set timeout 300
-
-# 获取参数
+# 获取命令行参数
 set host [lindex $argv 0]
 set user [lindex $argv 1]
 set password [lindex $argv 2]
@@ -11,43 +8,72 @@ set remote_dir [lindex $argv 3]
 set archive [lindex $argv 4]
 set compose_file [lindex $argv 5]
 
+# 设置超时时间
+set timeout 300
+
 # 创建远程目录
-spawn ssh -o StrictHostKeyChecking=no $user@$host "mkdir -p $remote_dir"
+spawn ssh -o StrictHostKeyChecking=no $user@$host mkdir -p $remote_dir
 expect {
-    "password:" { send "$password\r" }
-    timeout { exit 1 }
-}
-expect eof
-
-# 传输文件
-spawn scp -o StrictHostKeyChecking=no $archive $user@$host:$remote_dir/
-expect {
-    "password:" { send "$password\r" }
-    timeout { exit 1 }
-}
-expect eof
-
-# 执行部署命令
-spawn ssh -o StrictHostKeyChecking=no $user@$host
-expect {
-    "password:" { send "$password\r" }
-    timeout { exit 1 }
+    "password:" {
+        send "$password\r"
+        exp_continue
+    }
+    timeout {
+        puts "超时: 创建目录失败"
+        exit 1
+    }
+    eof
 }
 
-expect "$"
-send "cd $remote_dir\r"
-expect "$"
-send "tar -xzf $archive\r"
-expect "$"
-send "docker-compose -f $compose_file down\r"
-expect "$"
-send "docker-compose -f $compose_file up -d\r"
-expect "$"
-send "rm $archive\r"
-expect "$"
-send "exit\r"
-expect eof
+# 复制文件到远程服务器
+spawn scp $archive $compose_file $user@$host:$remote_dir/
+expect {
+    "password:" {
+        send "$password\r"
+        exp_continue
+    }
+    timeout {
+        puts "超时: 文件传输失败"
+        exit 1
+    }
+    eof
+}
 
-# 检查是否有错误
-catch wait result
-exit [lindex $result 3] 
+# 执行远程命令
+spawn ssh $user@$host
+expect {
+    "password:" {
+        send "$password\r"
+        expect "]*"
+        
+        # 进入目录
+        send "cd $remote_dir\r"
+        expect "]*"
+        
+        # 解压文件
+        send "tar -xzf $archive\r"
+        expect "]*"
+        
+        # 停止并删除旧容器
+        send "docker-compose -f $compose_file down\r"
+        expect "]*"
+        
+        # 构建并启动新容器
+        send "docker-compose -f $compose_file up --build -d\r"
+        expect "]*"
+        
+        # 清理文件
+        send "rm $archive\r"
+        expect "]*"
+        
+        send "exit\r"
+    }
+    timeout {
+        puts "超时: 远程命令执行失败"
+        exit 1
+    }
+    eof
+}
+
+puts "\n部署完成!"
+exit 0 

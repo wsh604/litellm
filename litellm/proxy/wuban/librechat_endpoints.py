@@ -353,7 +353,9 @@ async def stream_and_save(
                 model=model,
                 conversation_id=user_message.conversation_id,
                 parent_message_id=user_message.message_id,
-                message_id=event_manager.assistant_message_id
+                message_id=event_manager.assistant_message_id,
+                endpoint=user_message.endpoint,
+                endpointType=user_message.endpointType
             )
             asyncio.create_task(
                 conversation_history_manager.save_assistant_message(assistant_message)
@@ -433,7 +435,8 @@ async def chat_completion_with_history(
                 model=model,
                 conversation_id=user_message.conversation_id,
                 parent_message_id=user_message.message_id,
-                endpoint=user_message.endpoint
+                endpoint=user_message.endpoint,
+                endpointType=user_message.endpointType
             )
             fastapi_logger.info(f"Created assistant message: {assistant_message}")
             

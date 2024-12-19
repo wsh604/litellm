@@ -20,7 +20,7 @@ class BaseMessage:
     parent_message_id: str
     message_id: str = field(default_factory=lambda: str(uuid.uuid4()))
     endpoint: Optional[str] = None
-
+    endpointType: Optional[str] = None
 @dataclass
 class UserMessage(BaseMessage):
     """用户消息数据类"""
@@ -66,6 +66,7 @@ class ChatMessage:
             message_id=message.message_id,
             model=message.model,
             endpoint=message.endpoint,
+            endpointType=message.endpointType,
             is_created_by_user=message.is_created_by_user,
             error=message.error if isinstance(message, ErrorMessage) else None
         )
@@ -103,8 +104,8 @@ class ConversationHistoryManager:
                         "title": self._generate_title(message.text),
                         "model": message.model,
                         "modelDisplayLabel": message.model,
-                        "endpoint": message.endpoint or "openai",
-                        "endpointType": "custom"
+                        "endpoint": message.endpoint or "",
+                        "endpointType": message.endpointType or ""
                     }
                 )
                 self.logger.info(f"Created conversation: {message.conversation_id}")
@@ -180,6 +181,7 @@ class ConversationHistoryManager:
                 "isCreatedByUser": message.is_created_by_user,
                 "model": message.model,
                 "endpoint": message.endpoint,
+                "endpointType": message.endpointType,
                 "error": message.error  # 保存错误信息
             }
         )
@@ -228,8 +230,8 @@ class ConversationHistoryManager:
                     "__v": 0,
                     "createdAt": conv.createdAt,
                     "updatedAt": conv.updatedAt,
-                    "endpoint": "openai",
-                    "endpointType": "custom",
+                    "endpoint": conv.endpoint,
+                    "endpointType": conv.endpointType,
                     "isArchived": False,
                     "messages": [msg.messageId for msg in conv.messages],
                     "model": conv.model,
