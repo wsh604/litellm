@@ -3,12 +3,12 @@ from typing import Optional, Dict, Any, List, Tuple
 from dataclasses import dataclass, field
 from litellm.proxy.utils import PrismaClient
 from litellm.proxy._types import UserAPIKeyAuth
-import litellm
 import uuid
-import logging
 import traceback
+from .logger_util import WubanLogger
 
-logger = logging.getLogger(__name__)
+# 重置并获取 logger
+logger = WubanLogger.reset_logger()
 
 @dataclass
 class BaseMessage:
@@ -20,7 +20,9 @@ class BaseMessage:
     parent_message_id: str
     message_id: str = field(default_factory=lambda: str(uuid.uuid4()))
     endpoint: Optional[str] = None
-    endpointType: Optional[str] = None
+    endpoint_type: Optional[str] = None
+    files: Optional[List[Dict]] = None
+
 @dataclass
 class UserMessage(BaseMessage):
     """用户消息数据类"""
@@ -51,8 +53,10 @@ class ChatMessage:
     message_id: str
     model: Optional[str] = None
     endpoint: Optional[str] = None
+    endpoint_type: Optional[str] = None
     is_created_by_user: bool = False
-    error: Optional[str] = None  # 添加错误信息字段
+    error: Optional[str] = None
+    files: Optional[List[Dict]] = None  # 添加 files 字段
 
     @classmethod
     def from_base_message(cls, message: BaseMessage) -> 'ChatMessage':
@@ -66,9 +70,10 @@ class ChatMessage:
             message_id=message.message_id,
             model=message.model,
             endpoint=message.endpoint,
-            endpointType=message.endpointType,
+            endpoint_type=message.endpoint_type,
             is_created_by_user=message.is_created_by_user,
-            error=message.error if isinstance(message, ErrorMessage) else None
+            error=message.error if isinstance(message, ErrorMessage) else None,
+            files=message.files if hasattr(message, 'files') else None  # 安全地获取 files
         )
 
 class ConversationHistoryManager:
@@ -76,7 +81,7 @@ class ConversationHistoryManager:
     
     def __init__(self, prisma_client: PrismaClient):
         self.prisma_client = prisma_client
-        self.logger = logging.getLogger(__name__)
+        logger.info("Initializing ConversationHistoryManager")
 
     async def _ensure_connected(self):
         """确保数据库连接已建立"""
@@ -88,15 +93,49 @@ class ConversationHistoryManager:
             logger.error(f"Database connection error: {str(e)}")
             raise
     
-    async def _ensure_conversation_exists(self, message: BaseMessage) -> None:
+    async def _ensure_user_exists(self, wuban_user_id: str, litellm_user_id: str) -> None:
+        """确保用户映射关系存在，如果不存在则创建"""
+        try:
+            # 查找映射关系
+            mapping = await self.prisma_client.db.wubanusermapping.find_unique(
+                where={"wuban_user_id": wuban_user_id}
+            )
+            
+            if not mapping:
+                logger.info(f"Creating new user mapping: wuban_id={wuban_user_id}, litellm_id={litellm_user_id}")
+                # 创建新的映射关系
+                await self.prisma_client.db.wubanusermapping.create(
+                    data={
+                        "wuban_user_id": wuban_user_id,
+                        "litellm_user_id": litellm_user_id
+                    }
+                )
+                logger.info(f"Created user mapping for wuban_user_id: {wuban_user_id}")
+            elif mapping.litellm_user_id != litellm_user_id:
+                # 如果映射存在但 litellm_user_id 不匹配，更新映射
+                logger.info(f"Updating user mapping for wuban_user_id: {wuban_user_id}")
+                await self.prisma_client.db.wubanusermapping.update(
+                    where={"wuban_user_id": wuban_user_id},
+                    data={"litellm_user_id": litellm_user_id}
+                )
+                
+        except Exception as e:
+            logger.error(f"Error ensuring user mapping exists: {str(e)}")
+            logger.error(f"Traceback: {traceback.format_exc()}")
+            raise
+    
+    async def _ensure_conversation_exists(self, message: BaseMessage, litellm_user_id: str) -> None:
         """确保会话存在，如果不存在则创建"""
         try:
+            # 首先确保用户映射存在
+            await self._ensure_user_exists(message.user_id, litellm_user_id)
+            
             existing_conversation = await self.prisma_client.db.conversation.find_first(
                 where={"conversationId": message.conversation_id}
             )
             
             if not existing_conversation:
-                self.logger.info(f"Creating new conversation: {message.conversation_id}")
+                logger.info(f"Creating new conversation: {message.conversation_id}")
                 await self.prisma_client.db.conversation.create(
                     data={
                         "conversationId": message.conversation_id,
@@ -105,30 +144,35 @@ class ConversationHistoryManager:
                         "model": message.model,
                         "modelDisplayLabel": message.model,
                         "endpoint": message.endpoint or "",
-                        "endpointType": message.endpointType or ""
+                        "endpointType": message.endpoint_type or ""
                     }
                 )
-                self.logger.info(f"Created conversation: {message.conversation_id}")
+                logger.info(f"Created conversation: {message.conversation_id}")
             
             return existing_conversation
         except Exception as e:
-            self.logger.error(f"Error ensuring conversation exists: {str(e)}")
-            self.logger.error(f"Traceback: {traceback.format_exc()}")
+            logger.error(f"Error ensuring conversation exists: {str(e)}")
+            logger.error(f"Traceback: {traceback.format_exc()}")
             raise
     
-    def _generate_title(self, text: str, max_length: int = 100) -> str:
+    def _generate_title(self, text: str, max_length: int = 10) -> str:
         """从消息文本生成会话标题"""
+        # 如果文本为空，返回 "新会话"
+        if not text.strip():
+            return "新会话"
+        
         # 移除多余空白字符
         title = " ".join(text.split())
         # 截取合适长度
-        return title[:max_length] if len(title) > max_length else title
+        return title[:max_length] if len(title) >= max_length else title
 
 
     
-    async def save_user_message(self, message: UserMessage) -> Tuple[str, str]:
+    async def save_user_message(self, message: UserMessage, litellm_user_id: str) -> Tuple[str, str]:
+        logger.info(f"Saving user message: {message}")
         try:            
             # 确保会话存在
-            await self._ensure_conversation_exists(message)
+            await self._ensure_conversation_exists(message, litellm_user_id)
             # 创建并保存消息
             chat_message = ChatMessage.from_base_message(message)
             message_id = await self._save_message(chat_message)
@@ -140,11 +184,11 @@ class ConversationHistoryManager:
             logger.error(f"Traceback: {traceback.format_exc()}")
             raise
 
-    async def save_assistant_message(self, message: AssistantMessage) -> str:
-        """保存助手消息"""
+    async def save_assistant_message(self, message: AssistantMessage, litellm_user_id: str) -> str:
+        logger.info(f"Saving assistant message: {message}")
         try:
             # 确保会话存在
-            await self._ensure_conversation_exists(message)
+            await self._ensure_conversation_exists(message,litellm_user_id=litellm_user_id)
             
             chat_message = ChatMessage.from_base_message(message)
             return await self._save_message(chat_message)
@@ -154,11 +198,11 @@ class ConversationHistoryManager:
             logger.error(f"Traceback: {traceback.format_exc()}")
             raise
 
-    async def save_error_message(self, message: ErrorMessage) -> str:
+    async def save_error_message(self, message: ErrorMessage,litellm_user_id: str) -> str:
         """保存错误响应消息"""
         try:
             # 确保会话存在
-            await self._ensure_conversation_exists(message)
+            await self._ensure_conversation_exists(message,litellm_user_id=litellm_user_id)
             
             chat_message = ChatMessage.from_base_message(message)
             return await self._save_message(chat_message)
@@ -170,34 +214,65 @@ class ConversationHistoryManager:
 
     async def _save_message(self, message: ChatMessage) -> str:
         """保存单条消息的内部方法"""
+        # 创建消息基本数据
+        message_data = {
+            "messageId": message.message_id,
+            "conversationId": message.conversation_id,
+            "userId": message.user_id,
+            "text": message.text,
+            "sender": message.sender,
+            "parentMessageId": message.parent_message_id,
+            "isCreatedByUser": message.is_created_by_user,
+            "model": message.model,
+            "endpoint": message.endpoint,
+            "endpointType": message.endpoint_type,
+            "error": message.error
+        }
+
+        # 创建消息
         await self.prisma_client.db.message.create(
-            data={
-                "messageId": message.message_id,
-                "conversationId": message.conversation_id,
-                "userId": message.user_id,
-                "text": message.text,
-                "sender": message.sender,
-                "parentMessageId": message.parent_message_id,
-                "isCreatedByUser": message.is_created_by_user,
-                "model": message.model,
-                "endpoint": message.endpoint,
-                "endpointType": message.endpointType,
-                "error": message.error  # 保存错误信息
-            }
+            data=message_data
         )
+
+        # 如果有文件，创建文件关联
+        if message.files:
+            for file_info in message.files:
+                try:
+                    # 创建文件记录
+                    file = await self.prisma_client.db.file.create(
+                        data={
+                            "fileId": file_info["file_id"],
+                            "userId": message.user_id,
+                            "name": file_info.get("name", "unnamed"),
+                            "type": file_info["type"],
+                            "url": file_info.get("filepath", "")
+                        }
+                    )
+
+                    # 创建消息-文件关联
+                    await self.prisma_client.db.messagefile.create(
+                        data={
+                            "messageId": message.message_id,
+                            "fileId": file.fileId
+                        }
+                    )
+                except Exception as e:
+                    logger.error(f"Error saving file {file_info.get('file_id')}: {str(e)}")
+                    continue
+
         return message.message_id
 
 
     async def get_chat_history(
         self,
-        user_api_key_dict: UserAPIKeyAuth,
+        user_id: str,
         conversation_id: Optional[str] = None,
         limit: int = 25,
         skip: int = 0
     ) -> Dict:
         """获取聊天历史记录"""
         try:
-            where = {"userId": user_api_key_dict.user_id}
+            where = {"userId": user_id}
             if conversation_id:
                 where["conversationId"] = conversation_id
                 
@@ -231,7 +306,6 @@ class ConversationHistoryManager:
                     "createdAt": conv.createdAt,
                     "updatedAt": conv.updatedAt,
                     "endpoint": conv.endpoint,
-                    "endpointType": conv.endpointType,
                     "isArchived": False,
                     "messages": [msg.messageId for msg in conv.messages],
                     "model": conv.model,
@@ -240,6 +314,11 @@ class ConversationHistoryManager:
                     "tags": [],
                     "title": conv.title
                 }
+                
+                # 只有当 endpointType 不为空时才添加
+                if conv.endpointType:
+                    formatted_conv["endpointType"] = conv.endpointType
+                    
                 formatted_conversations.append(formatted_conv)
             
             return {
@@ -273,7 +352,7 @@ class ConversationHistoryManager:
         if not conversation:
             raise Exception("Conversation not found or unauthorized")
             
-        # 删除会话���相关消息
+        # 删除会话相关消息
         await self.prisma_client.db.messages.delete_many(
             where={"conversationId": conversation_id}
         )
@@ -283,7 +362,7 @@ class ConversationHistoryManager:
 
     async def get_conversation_messages(
         self,
-        user_api_key_dict: UserAPIKeyAuth,
+        user_id: str,
         conversation_id: str
     ) -> List[Dict]:
         """获取指定会话的所有消息"""
@@ -292,7 +371,7 @@ class ConversationHistoryManager:
             messages = await self.prisma_client.db.message.find_many(
                 where={
                     "conversationId": conversation_id,
-                    "userId": user_api_key_dict.user_id
+                    "userId": user_id
                 },
                 order={
                     "createdAt": "asc"  # 按时间正序排列消息
@@ -300,8 +379,9 @@ class ConversationHistoryManager:
             )
             
             # 格式化消息数据
-            formatted_messages = [
-                {
+            formatted_messages = []
+            for msg in messages:
+                message_dict = {
                     "id": msg.id,
                     "messageId": msg.messageId,
                     "conversationId": msg.conversationId,
@@ -313,8 +393,12 @@ class ConversationHistoryManager:
                     "endpoint": msg.endpoint,
                     "createdAt": msg.createdAt
                 }
-                for msg in messages
-            ]
+                
+                # 只有当 endpointType 不为空时才添加
+                if msg.endpointType:
+                    message_dict["endpointType"] = msg.endpointType
+                    
+                formatted_messages.append(message_dict)
             
             return formatted_messages
             

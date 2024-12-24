@@ -72,3 +72,10 @@ tests/llm_translation/log.txt
 htmlcov/
 .coverage
 coverage.xml
+
+# Logs
+logs/
+logs/*
+
+sqlite/
+sqlite/*

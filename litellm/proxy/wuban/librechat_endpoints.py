@@ -8,16 +8,24 @@ from litellm.proxy.wuban.conversation_history_manager import (
     AssistantMessage, 
     ErrorMessage
 )
-from typing import List, Optional, AsyncGenerator, Dict, Any,Union
+from typing import List, Optional, AsyncGenerator, Dict, Any,Union, Tuple
 from litellm.proxy._types import UserAPIKeyAuth
 import asyncio
 import uuid
 import json
 from fastapi.responses import StreamingResponse
 import traceback
-from fastapi.logger import logger as fastapi_logger
+from .wuban_auth_service import WubanAuthService, combined_auth, CombinedAuthResult
+from .logger_util import WubanLogger
+import base64
+import aiohttp
+import os
+from .wuban_user_service import WubanUserService, WubanUserInfo
 
-# 添加路由查找函数
+# 获取 WubanLogger 实例
+logger = WubanLogger.get_logger()
+
+# 路由查找函数
 def get_route_by_path(request: Request, path: str):
     """根据路径获取路由"""
     for route in request.app.router.routes:
@@ -27,14 +35,11 @@ def get_route_by_path(request: Request, path: str):
 
 librechat_router = APIRouter(
     prefix="/api",
-    tags=["librechat"],
-    dependencies=[Depends(user_api_key_auth)]
+    tags=["librechat"]
 )
 
-# 添加 prisma_client 属性
 librechat_router.prisma_client = None
 
-# 初始化 ConversationHistoryManager
 conversation_history_manager = None
 
 async def get_conversation_history_manager():
@@ -57,6 +62,7 @@ class MessageResponse(BaseModel):
     parentMessageId: str
     model: Optional[str]
     endpoint: Optional[str]
+    endpointType: Optional[str]
     createdAt: datetime
     isCreatedByUser: bool
 
@@ -67,7 +73,7 @@ class ConversationResponse(BaseModel):
     modelDisplayLabel: Optional[str]
     createdAt: datetime
     updatedAt: datetime
-    messages: List[MessageResponse]
+    messages: List[str]
 
 # 获取会话列表
 @librechat_router.get(
@@ -76,7 +82,7 @@ class ConversationResponse(BaseModel):
 )
 async def list_conversations(
     pageNumber: int = 1,
-    user_api_key_dict: UserAPIKeyAuth = Depends(user_api_key_auth),
+    auth_result: CombinedAuthResult = Depends(combined_auth),
     conversation_history_manager: ConversationHistoryManager = Depends(get_conversation_history_manager)
 ):
     try:
@@ -84,7 +90,7 @@ async def list_conversations(
         skip = (pageNumber - 1) * page_size
         
         result = await conversation_history_manager.get_chat_history(
-            user_api_key_dict=user_api_key_dict,
+            user_id=auth_result.wuban_id,
             limit=page_size,
             skip=skip
         )
@@ -106,26 +112,22 @@ async def list_conversations(
 # 获取单个会话详情
 @librechat_router.get(
     "/messages/{conversation_id}",
-    response_model=List[MessageResponse],  # 修改返回类型
     description="获取指定会话的消息列表"
 )
 async def get_conversation(
     conversation_id: str,
-    user_api_key_dict: UserAPIKeyAuth = Depends(user_api_key_auth),
+    auth_result: CombinedAuthResult = Depends(combined_auth),
     conversation_history_manager: ConversationHistoryManager = Depends(get_conversation_history_manager)
 ):
     """获取指定会话的消息列表"""
     try:
         messages = await conversation_history_manager.get_conversation_messages(
-            user_api_key_dict=user_api_key_dict,
+            user_id=auth_result.wuban_id,
             conversation_id=conversation_id
         )
         
         if not messages:
-            raise HTTPException(
-                status_code=404,
-                detail="No messages found"
-            )
+            return []
             
         return messages
     except HTTPException as e:
@@ -143,11 +145,12 @@ async def get_conversation(
 )
 async def delete_conversation(
     conversation_id: str,
-    user_api_key_dict: UserAPIKeyAuth = Depends(user_api_key_auth),
+    auth_dict: dict = Depends(combined_auth),
     conversation_history_manager: ConversationHistoryManager = Depends(get_conversation_history_manager)
 ):
     """删除指定的聊天会话及其所有相关消息"""
     try:
+        user_api_key_dict = auth_dict["litellm_auth"]
         await conversation_history_manager.delete_chat_history(
             user_api_key_dict=user_api_key_dict,
             session_id=conversation_id
@@ -168,7 +171,7 @@ class StreamEventManager:
         self.assistant_message_id = str(uuid.uuid4())
         self.full_response = ""
         self.first_chunk = True
-        self.logger = fastapi_logger
+        self.logger = logger
     
     def process_chunk(self, chunk: Union[str, bytes]) -> Optional[str]:
         """处理单个数据块并返回格式化的事件"""
@@ -180,18 +183,21 @@ class StreamEventManager:
                 
             # 解析内容
             content = self._extract_content(chunk_str)
-            if not content:
+            if content is None:
                 return None
                 
             # 更新完整响应
             self.full_response += content
             
             # 生成事件
-            return self._create_message_event(content)
+            return self._create_message_event(self.full_response)
             
         except Exception as e:
             self.logger.error(f"Error processing chunk: {str(e)}")
-            return None
+            # 在发生错误时添加提示
+            error_content = "\n[发生错误：响应可能不完整]"
+            self.full_response += error_content
+            return self._create_message_event(error_content)
     def _normalize_chunk(self, chunk: Union[str, bytes]) -> Optional[str]:
         """标准化 chunk 数据"""
         try:
@@ -218,7 +224,23 @@ class StreamEventManager:
             self.logger.debug(f"Parsed JSON: {chunk_data}")
             
             if chunk_data.get("choices"):
-                content = chunk_data["choices"][0].get("delta", {}).get("content", "")
+                # 检查是否有完成标志
+                if "finish_reason" in chunk_data["choices"][0]:
+                    finish_reason = chunk_data["choices"][0].get("finish_reason")
+                    if finish_reason == "length":
+                        # 模型输出被截断
+                        self.logger.warning("Model output was truncated due to length limit")
+                        return "\n[Model output was truncated due to length limit]"
+                    elif finish_reason == "stop":
+                        # 正常结束
+                        return None
+
+                # 获取内容
+                if "delta" in chunk_data["choices"][0]:
+                    content = chunk_data["choices"][0]["delta"].get("content", "")
+                else:
+                    content = chunk_data["choices"][0].get("text", "")
+                
                 if content:
                     self.logger.debug(f"Extracted content: {content}")
                     return content
@@ -229,15 +251,10 @@ class StreamEventManager:
     def _create_message_event(self, content: str) -> str:
         """创建消息事件"""
         event_data = {
-            "message": {
-                "messageId": self.assistant_message_id,
-                "parentMessageId": self.user_message.message_id,
-                "conversationId": self.user_message.conversation_id,
-                "sender": "Assistant",
-                "text": content,
-                "isCreatedByUser": False,
-                "model": self.model
-            }
+            "message": True,
+            "messageId": self.user_message.message_id,
+            "parentMessageId": self.user_message.parent_message_id,
+            "text": content
         }
         
         if self.first_chunk:
@@ -250,24 +267,30 @@ class StreamEventManager:
     def format_user_message_event(self,text:str) -> str:
         """格式化用户消息事件"""
         event_data = {
-            "message": {
+                "message": True,
                 "messageId": self.user_message.message_id,
                 "parentMessageId": self.user_message.parent_message_id,
-                "conversationId": self.user_message.conversation_id,
-                "sender": "User",
-                "text": text,
-                "isCreatedByUser": True
-            },
-            "created": True
+                "text": text
         }
         return self._format_event("message", event_data)
+    
+    def _generate_title(self, text: str, max_length: int = 10) -> str:
+        """从消息文本生成会话标题"""
+        # 如果文本为空，返回 "新会话"
+        if not text.strip():
+            return "新会话"
+        
+        # 移除多余空白字符
+        title = " ".join(text.split())
+        # 截取合适长度
+        return title[:max_length] if len(title) >= max_length else title
     
     def format_final_event(self) -> str:
         """格式化最终事件"""
         event_data = {
             "final": True,
             "conversation": self._get_conversation_data(),
-            "title": self.user_message.text[:50],
+            "title": self._generate_title(self.user_message.text),
             "requestMessage": self._get_request_message_data(),
             "responseMessage": self._get_response_message_data()
         }
@@ -275,22 +298,28 @@ class StreamEventManager:
     
     def _get_conversation_data(self) -> Dict[str, Any]:
         """获取会话数据"""
-        return {
-            "_id": self.user_message.conversation_id,
+        # 构建基础数据
+        conversation_data = {
+            "_id": str(uuid.uuid4()),
             "user": self.user_message.user_id,
             "conversationId": self.user_message.conversation_id,
             "__v": 0,
             "createdAt": datetime.now().isoformat(),
-            "endpoint": "openai",
-            "endpointType": "custom",
+            "endpoint": self.user_message.endpoint,
             "isArchived": False,
             "messages": [self.user_message.message_id, self.assistant_message_id],
             "model": self.model,
             "resendFiles": True,
+            "files": [],
             "tags": [],
-            "title": self.user_message.text[:50],
+            "title":self._generate_title(self.user_message.text),
             "updatedAt": datetime.now().isoformat()
         }
+
+        # 仅当 endpointType 不为空字符串时添加该字段
+        if self.user_message.endpoint_type:
+            conversation_data["endpointType"] = self.user_message.endpoint_type
+        return conversation_data
     
     def _get_request_message_data(self) -> Dict[str, Any]:
         """获取请求消息数据"""
@@ -310,6 +339,8 @@ class StreamEventManager:
             "conversationId": self.user_message.conversation_id,
             "parentMessageId": self.user_message.message_id,
             "isCreatedByUser": False,
+            "finish reason":"stop",
+            "endpoint": self.user_message.endpoint,
             "model": self.model,
             "sender": "Assistant",
             "text": self.full_response
@@ -324,7 +355,7 @@ async def stream_and_save(
     response: StreamingResponse,
     user_message: UserMessage,
     model: str,
-    user_api_key_dict: UserAPIKeyAuth,
+    litellm_user_id: str,
     conversation_history_manager: ConversationHistoryManager
 ) -> AsyncGenerator[str, None]:
     """处理流式响应并保存消息"""
@@ -339,7 +370,7 @@ async def stream_and_save(
                 yield formatted_event
                 
     except Exception as e:
-        fastapi_logger.error(f"Error in stream processing: {str(e)}")
+        logger.error(f"Error in stream processing: {str(e)}")
         raise
     finally:
         try:
@@ -349,130 +380,305 @@ async def stream_and_save(
             # 保存助手消息
             assistant_message = AssistantMessage(
                 text=event_manager.full_response,
-                user_id=user_api_key_dict.user_id,
+                user_id=user_message.user_id,
                 model=model,
                 conversation_id=user_message.conversation_id,
                 parent_message_id=user_message.message_id,
                 message_id=event_manager.assistant_message_id,
                 endpoint=user_message.endpoint,
-                endpointType=user_message.endpointType
+                endpoint_type=user_message.endpoint_type
             )
             asyncio.create_task(
-                conversation_history_manager.save_assistant_message(assistant_message)
+                conversation_history_manager.save_assistant_message(assistant_message,litellm_user_id=litellm_user_id)
             )
         except Exception as e:
-            fastapi_logger.error(f"Error in final event processing: {str(e)}")
+            logger.error(f"Error in final event processing: {str(e)}")
 
+# 文件处理相关的辅助函数
+async def download_and_encode_file(file_info: Dict) -> str:
+    """下载文件并转换为 base64 编码"""
+    try:
+        filepath = file_info["filepath"]
+        
+        # 如果是本地文件路径，直接读取
+        if os.path.exists(filepath):
+            with open(filepath, "rb") as f:
+                file_content = f.read()
+        else:
+            # 如果是网络URL，下载文件
+            async with aiohttp.ClientSession() as session:
+                async with session.get(filepath) as response:
+                    if response.status != 200:
+                        raise Exception(f"Failed to download file: {filepath}")
+                    file_content = await response.read()
+        
+        # 转换为 base64
+        base64_content = base64.b64encode(file_content).decode('utf-8')
+        return base64_content
+        
+    except Exception as e:
+        logger.error(f"Error processing file {file_info.get('file_id')}: {str(e)}")
+        raise
+
+async def process_files(files: List[Dict]) -> List[Dict]:
+    """处理文件列表，返回包含 base64 编码的文件信息"""
+    if not files:
+        return []
+        
+    processed_files = []
+    for file_info in files:
+        try:
+            base64_content = await download_and_encode_file(file_info)
+            processed_file = {
+                "file_id": file_info["file_id"],
+                "type": file_info["type"],
+                "base64": base64_content
+            }
+            # 如果有图片尺寸信息，添加到处理后的文件信息中
+            if "height" in file_info and "width" in file_info:
+                processed_file["height"] = file_info["height"]
+                processed_file["width"] = file_info["width"]
+                
+            processed_files.append(processed_file)
+            
+        except Exception as e:
+            logger.error(f"Failed to process file: {str(e)}")
+            continue
+            
+    return processed_files
+
+# 修改 chat_completion_with_history 方法
 @librechat_router.post("/ask/{model}")
 async def chat_completion_with_history(
     request: Request,
     model: str,
-    user_api_key_dict: UserAPIKeyAuth = Depends(user_api_key_auth),
-    conversation_history_manager: ConversationHistoryManager = Depends(get_conversation_history_manager)
+    auth_result: CombinedAuthResult = Depends(combined_auth),
+    conversation_history_manager: ConversationHistoryManager = Depends(get_conversation_history_manager),
 ):
-    user_message = None
     try:
-        fastapi_logger.info(f"Starting request for model: {model}")
-        data = await request.json()
-        is_streaming = data.get("stream", False)
-        fastapi_logger.info(f"Streaming mode: {is_streaming}")
+        user_api_key_dict = auth_result.litellm_auth
+        wuban_user_id = auth_result.wuban_id
+        litellm_user_id = user_api_key_dict.user_id
         
-        # 构建用户消息
+        user_message = None
+        logger.info(f"Starting request for model: {model}")
+        data = await request.json()
+        logger.info(f"Received request data: {data}")
+
+        # 处理文件
+        files = data.get("files", [])
+        
+        
+        # 构建用户消息参数
+        is_streaming = True if data.get("stream") is None else data.get("stream")
         conversation_id = data.get("conversationId") or str(uuid.uuid4())
         parent_message_id = data.get("parentMessageId") or ConversationHistoryManager.NO_PARENT
         endpoint = data.get("endpoint") or ""
-        fastapi_logger.info(f"Conversation ID: {conversation_id}")
-        fastapi_logger.info(f"Parent message ID: {parent_message_id}")
-        
+        endpoint_type = data.get("endpointType") or ""  # 保留 endpointType
+        model_name = data.get('model')
+
+        # 创建用户消息对象
         user_message = UserMessage(
-            text=data["messages"][-1]["content"],
-            user_id=user_api_key_dict.user_id,
-            model=model,
+            text=data["text"],  # 使用text字段
+            user_id=wuban_user_id,
+            model=model_name, 
+            files=files,
             conversation_id=conversation_id,
             parent_message_id=parent_message_id,
-            endpoint=endpoint
+            endpoint=endpoint,
+            endpoint_type=endpoint_type  # 添加 endpoint_type
         )
-        fastapi_logger.info(f"Created user message: {user_message}")
         
         # 异步保存用户消息
-        fastapi_logger.info("Saving user message")
-        asyncio.create_task(
-            conversation_history_manager.save_user_message(user_message)
+        logger.info("Saving user message")
+        await conversation_history_manager.save_user_message(
+            message=user_message,
+            litellm_user_id=litellm_user_id
         )
         
         # 获取 chat_completion 路由
-        fastapi_logger.info("Getting chat completion route")
         chat_completion_route = get_route_by_path(request, "/v1/chat/completions")
         
-        # 调用 chat_completion
-        data["model"] = model
-        fastapi_logger.info("Calling chat completion endpoint")
-        response = await chat_completion_route.endpoint(
-            request=request,
-            fastapi_response=Response(),
-            model=model,
-            user_api_key_dict=user_api_key_dict
+        # 重构请求数据为所需格式
+        messages = []
+        
+        # 如果有上下文消息，添加到消息列表中
+        generation = data.get("generation", "")
+        if generation:
+            messages.append({
+                "role": "assistant",
+                "content": generation
+            })
+        
+        processed_files = await process_files(files)
+        # 添加当前用户消息
+        if processed_files:
+            # 如果有文件，使用复杂的消息格式
+            messages.append({
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": data["text"]},
+                    *[{
+                        "type": file["type"].split('/')[0],
+                        file["type"].split('/')[0]: {
+                            "data": file["base64"],
+                            "height": file.get("height"),
+                            "width": file.get("width")
+                        }
+                    } for file in processed_files]
+                ]
+            })
+        else:
+            # 如果没有文件，使用简单的消息格式
+            messages.append({
+                "role": "user",
+                "content": data["text"]
+            })
+
+        formatted_data = {
+            "model": f"{endpoint}/{model_name}",
+            "messages": messages,  # 使用包含上下文的消息列表
+            "endpoint": endpoint,
+            "stream": is_streaming,
+            "max_tokens": 4000
+        }
+        
+        # 创建新的请求对象并设置请求体
+        async def mock_receive():
+            return {
+                "type": "http.request",
+                "body": json.dumps(formatted_data).encode(),
+                "more_body": False
+            }
+
+        new_request = Request(
+            scope={
+                **request.scope,
+                "path": "/v1/chat/completions",
+                "method": "POST",
+            },
+            receive=mock_receive
         )
 
+        # 调用 chat_completion
+        logger.info(f"Calling chat completion endpoint with data: {formatted_data}")
+        try:
+            response = await chat_completion_route.endpoint(
+                request=new_request,
+                fastapi_response=Response(),
+                model=model,
+                user_api_key_dict=UserAPIKeyAuth(
+                    api_key=user_api_key_dict.api_key,
+                    user_id=user_api_key_dict.user_id,
+                    user_role=user_api_key_dict.user_role
+                )
+            )
+        except Exception as e:
+            logger.error(f"Chat completion error: {str(e)}")
+            logger.error(f"Request data: {formatted_data}")
+            raise
+
         if is_streaming:
-            fastapi_logger.info("Processing streaming response")
+            logger.info("Processing streaming response")
             return StreamingResponse(
                 stream_and_save(
                     response=response,
                     user_message=user_message,
-                    model=model,
-                    user_api_key_dict=user_api_key_dict,
+                    model=model_name,
+                    litellm_user_id=litellm_user_id,
                     conversation_history_manager=conversation_history_manager
                 ),
                 media_type=response.media_type
             )
         else:
-            fastapi_logger.info("Processing non-streaming response")
-            # 非流式响应，直接保存助手消息
+            logger.info("Processing non-streaming response")
+            # 非流式响应处理
             assistant_message = AssistantMessage(
                 text=response.choices[0].message.content,
-                user_id=user_api_key_dict.user_id,
+                user_id=wuban_user_id,
                 model=model,
                 conversation_id=user_message.conversation_id,
                 parent_message_id=user_message.message_id,
                 endpoint=user_message.endpoint,
-                endpointType=user_message.endpointType
+                endpoint_type=user_message.endpoint_type
             )
-            fastapi_logger.info(f"Created assistant message: {assistant_message}")
             
             asyncio.create_task(
-                conversation_history_manager.save_assistant_message(assistant_message)
+                conversation_history_manager.save_assistant_message(assistant_message,litellm_user_id=litellm_user_id)
             )
+            
             # 构建响应
             libre_response = {
                 "messageId": assistant_message.message_id,
                 "conversationId": assistant_message.conversation_id,
                 "text": assistant_message.text,
                 "sender": assistant_message.sender,
+                "userId": wuban_user_id,
                 "parentMessageId": assistant_message.parent_message_id,
                 "model": assistant_message.model,
                 "endpoint": assistant_message.endpoint,
+                "endpointType": assistant_message.endpoint_type,  # 添加 endpoint_type
                 "isCreatedByUser": assistant_message.is_created_by_user
             }
             
-            fastapi_logger.info("Request completed successfully")
+            logger.info("Request completed successfully")
             return libre_response
             
     except Exception as e:
-        fastapi_logger.error(f"Error occurred: {str(e)}")
-        fastapi_logger.error(f"Traceback: {traceback.format_exc()}")
-        # 异步保存错误消息
+        logger.error(f"Error occurred: {str(e)}")
+        logger.error(f"Traceback: {traceback.format_exc()}")
+        # 错误处理
         if conversation_history_manager and user_message:
             error_message = ErrorMessage(
                 text=str(e),
-                user_id=user_api_key_dict.user_id,
+                user_id=wuban_user_id,
                 model=model,
                 conversation_id=user_message.conversation_id,
                 parent_message_id=user_message.message_id,
                 error=str(e)
             )
-            fastapi_logger.error(f"Created error message: {error_message}")
+            logger.error(f"Created error message: {error_message}")
             asyncio.create_task(
-                conversation_history_manager.save_error_message(error_message)
+                conversation_history_manager.save_error_message(error_message,litellm_user_id=litellm_user_id)
             )
         raise
+
+# 创建 WubanUserService 实例
+user_service = WubanUserService()
+
+@librechat_router.get(
+    "/user",
+    response_model=WubanUserInfo,
+    description="获取 Wuban 用户信息"
+)
+async def get_user_info(
+    request: Request,
+    auth_result: CombinedAuthResult = Depends(combined_auth)
+):
+    """获取用户信息"""
+    try:
+        # 从请求头获取认证信息
+        token = request.headers.get("Authorization")
+        if not token:
+            raise HTTPException(
+                status_code=401,
+                detail="No authorization token provided"
+            )
+        
+        # 获取用户信息
+        user_info = await user_service.get_user_info(
+            user_id=auth_result.wuban_id,
+            token=token
+        )
+        
+        return user_info
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error in get_user_info: {str(e)}")
+        logger.error(f"Traceback: {traceback.format_exc()}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to get user info: {str(e)}"
+        )

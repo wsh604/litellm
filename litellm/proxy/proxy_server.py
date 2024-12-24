@@ -25,6 +25,7 @@ from typing import (
     get_type_hints,
 )
 
+
 if TYPE_CHECKING:
     from opentelemetry.trace import Span as _Span
 
@@ -3058,11 +3059,15 @@ class ProxyStartupEvent:
                 prisma_client = PrismaClient(
                     database_url=database_url, proxy_logging_obj=proxy_logging_obj
                 )
+
             except Exception as e:
                 raise e
 
             await prisma_client.connect()
-
+            
+            from litellm.proxy.wuban.litellm_sqlite_adapter import extend_prisma_client
+            prisma_client = extend_prisma_client(prisma_client)
+            
             ## Add necessary views to proxy ##
             asyncio.create_task(
                 prisma_client.check_view_exists()
@@ -3331,12 +3336,12 @@ async def chat_completion(  # noqa: PLR0915
             proxy_config=proxy_config,
         )
 
-        data["model"] = (
-            general_settings.get("completion_model", None)  # server default
-            or user_model  # model name passed via cli args
-            or model  # for azure deployments
-            or data["model"]  # default passed in http request
-        )
+        # data["model"] = (
+        #     general_settings.get("completion_model", None)  # server default
+        #     or user_model  # model name passed via cli args
+        #     or model  # for azure deployments
+        #     or data["model"]  # default passed in http request
+        # )
 
         global user_temperature, user_request_timeout, user_max_tokens, user_api_base
         # override with user settings, these are params passed via cli

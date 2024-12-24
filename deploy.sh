@@ -4,7 +4,7 @@
 DEFAULT_HOST="localhost"
 DEFAULT_USER="root"
 DEFAULT_DIR="/root/app"
-DEFAULT_COMPOSE_FILE="docker-compose.wuban.yml"
+DEFAULT_COMPOSE_FILE="docker-compose.wuban_server.yml"
 
 # 显示使用方法
 usage() {

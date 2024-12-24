@@ -5,16 +5,15 @@ services:
       context: .
       dockerfile: Dockerfile.wuban
       args:
-        LITELLM_BUILD_IMAGE: python:3.11.8-slim-buster
-        LITELLM_RUNTIME_IMAGE: python:3.11.8-slim-buster
-      platform: linux/arm64/v8
+        LITELLM_BUILD_IMAGE: python:3.11.8-slim
+        LITELLM_RUNTIME_IMAGE: python:3.11.8-slim
     ports:
       - "4000:4000"
     volumes:
       - ./lite_config.yaml:/app/lite_config.yaml
-      - ./sqlite:/app/sqlite
+      - sqlite_data:/app/sqlite
     environment:
-      DATABASE_URL: "sqlite:///sqlite/litellm.db"
+      DATABASE_URL: "file:/app/sqlite/litellm.db"
       STORE_MODEL_IN_DB: "True"
       WUBAN_RPC_URL: "http://host.docker.internal:8080/jsonrpc"
     env_file:
@@ -24,7 +23,11 @@ services:
       - "host.docker.internal:host-gateway"
     networks:
       - wuban_network
-      
+
+volumes:
+  sqlite_data:
+    driver: local
+
 networks:
   wuban_network:
     driver: bridge
