@@ -3,11 +3,8 @@ from typing import Callable
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Request, Response, status
 
-from litellm.proxy._types import (
-    UserAPIKeyAuth,
-)
-from litellm.proxy.auth.user_api_key_auth import user_api_key_auth
 from .WLog import log
+from .wuban_auth_service import combined_auth, CombinedAuthResult
 
 TAG = "librechat"
 router = APIRouter()
@@ -21,11 +18,11 @@ def set_model_list_def(model_list_from_proxy: Callable):
 
 @router.get(
     "/api/models",
-    dependencies=[Depends(user_api_key_auth)],
+    dependencies=[Depends(combined_auth)],
     tags=[TAG]
 )
-async def models(user_api_key_dict: UserAPIKeyAuth = Depends(user_api_key_auth)):
-    originData = await model_list(user_api_key_dict)
+async def models(auth_result: CombinedAuthResult = Depends(combined_auth)):
+    originData = await model_list(auth_result.litellm_auth)
     log(TAG, originData)
 
     # myTest = {'data': [{'id': 'deepseek/deepseek-chat', 'object': 'model', 'created': 1677610602, 'owned_by': 'openai'}
@@ -56,11 +53,11 @@ async def models(user_api_key_dict: UserAPIKeyAuth = Depends(user_api_key_auth))
 
 @router.get(
     "/api/endpoints",
-    dependencies=[Depends(user_api_key_auth)],
+    dependencies=[Depends(combined_auth)],
     tags=[TAG]
 )
-async def endpoints(user_api_key_dict: UserAPIKeyAuth = Depends(user_api_key_auth)):
-    models_dict = await models(user_api_key_dict)
+async def endpoints(auth_result: CombinedAuthResult = Depends(combined_auth)):
+    models_dict = await models(auth_result)
     log(TAG, models_dict)
     outData = {}
     idx = 0
@@ -80,7 +77,7 @@ def isInnerModel(name):
 
 @router.get(
     "/api/keys",
-    dependencies=[Depends(user_api_key_auth)],
+    dependencies=[Depends(combined_auth)],
     tags=[TAG]
 )
 async def keys(name):
@@ -92,7 +89,7 @@ async def keys(name):
 
 @router.post(
     "/api/files/images",
-    dependencies=[Depends(user_api_key_auth)],
+    dependencies=[Depends(combined_auth)],
     tags=[TAG]
 )
 async def image():
@@ -101,7 +98,7 @@ async def image():
 
 @router.post(
     "/api/files",
-    dependencies=[Depends(user_api_key_auth)],
+    dependencies=[Depends(combined_auth)],
     tags=[TAG]
 )
 async def file():
