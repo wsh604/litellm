@@ -138,25 +138,50 @@ async def get_conversation(
             detail=f"Error fetching messages: {str(e)}"
         )
 
-# 删除会话
-@librechat_router.delete(
-    "/conversations/{conversation_id}",
+# 定义删除会话的请求模型
+class ConversationDeleteRequest(BaseModel):
+    arg: Dict[str, str]
+
+@librechat_router.post(
+    "/convos/clear",
     description="删除指定的聊天会话及其所有消息"
 )
 async def delete_conversation(
-    conversation_id: str,
-    auth_dict: dict = Depends(combined_auth),
+    request: ConversationDeleteRequest,
+    auth_result: CombinedAuthResult = Depends(combined_auth),
     conversation_history_manager: ConversationHistoryManager = Depends(get_conversation_history_manager)
 ):
     """删除指定的聊天会话及其所有相关消息"""
     try:
-        user_api_key_dict = auth_dict["litellm_auth"]
-        await conversation_history_manager.delete_chat_history(
-            user_api_key_dict=user_api_key_dict,
-            session_id=conversation_id
+        conversation_id = request.arg.get("conversationId")
+        if not conversation_id:
+            raise HTTPException(
+                status_code=400,
+                detail="Missing conversationId"
+            )
+            
+        logger.info(f"Deleting conversation: {conversation_id}")
+        
+        # 调用删除方法并获取删除结果
+        result = await conversation_history_manager.delete_chat_history(
+            wuban_user_id=auth_result.wuban_id,
+            conversation_id=conversation_id
         )
-        return {"status": "success", "message": "Conversation deleted successfully"}
+        
+        return {
+            "acknowledged": True,
+            "deletedCount": 1,
+            "messages": {
+                "acknowledged": True,
+                "deletedCount": result["messages_deleted"]
+            }
+        }
+        
+    except HTTPException:
+        raise
     except Exception as e:
+        logger.error(f"Error deleting conversation: {str(e)}")
+        logger.error(f"Traceback: {traceback.format_exc()}")
         raise HTTPException(
             status_code=500,
             detail=f"Error deleting conversation: {str(e)}"
@@ -254,11 +279,12 @@ class StreamEventManager:
             "message": True,
             "messageId": self.user_message.message_id,
             "parentMessageId": self.user_message.parent_message_id,
-            "text": content
+            "text": content,
+            "initial": False
         }
         
         if self.first_chunk:
-            event_data["created"] = True
+            event_data["initial"] = True
             self.first_chunk = False
             self.logger.info("Added 'created' flag to first chunk")
         
@@ -267,10 +293,15 @@ class StreamEventManager:
     def format_user_message_event(self,text:str) -> str:
         """格式化用户消息事件"""
         event_data = {
-                "message": True,
+            "message": {
+                "conversationId": self.user_message.conversation_id,
                 "messageId": self.user_message.message_id,
                 "parentMessageId": self.user_message.parent_message_id,
+                "isCreatedByUser": True,
+                "sender": "User", 
                 "text": text
+            },
+            "created": True
         }
         return self._format_event("message", event_data)
     
@@ -282,7 +313,7 @@ class StreamEventManager:
         
         # 移除多余空白字符
         title = " ".join(text.split())
-        # 截取合适长度
+        # 截取适长度
         return title[:max_length] if len(title) >= max_length else title
     
     def format_final_event(self) -> str:
@@ -362,8 +393,7 @@ async def stream_and_save(
     
     event_manager = StreamEventManager(user_message, model)
     
-    first_chunk = True
-    
+    yield event_manager.format_user_message_event(user_message.text)
     try:
         async for chunk in response.body_iterator:
             if formatted_event := event_manager.process_chunk(chunk):
@@ -447,7 +477,7 @@ async def process_files(files: List[Dict]) -> List[Dict]:
             
     return processed_files
 
-# 修改 chat_completion_with_history 方法
+# chat_completion_with_history 方法
 @librechat_router.post("/ask/{model}")
 async def chat_completion_with_history(
     request: Request,
@@ -464,10 +494,8 @@ async def chat_completion_with_history(
         logger.info(f"Starting request for model: {model}")
         data = await request.json()
         logger.info(f"Received request data: {data}")
-
         # 处理文件
         files = data.get("files", [])
-        
         
         # 构建用户消息参数
         is_streaming = True if data.get("stream") is None else data.get("stream")
@@ -476,6 +504,8 @@ async def chat_completion_with_history(
         endpoint = data.get("endpoint") or ""
         endpoint_type = data.get("endpointType") or ""  # 保留 endpointType
         model_name = data.get('model')
+        override_parent_message_id = data.get("overrideParentMessageId")
+        
 
         # 创建用户消息对象
         user_message = UserMessage(
@@ -488,14 +518,20 @@ async def chat_completion_with_history(
             endpoint=endpoint,
             endpoint_type=endpoint_type  # 添加 endpoint_type
         )
-        
-        # 异步保存用户消息
-        logger.info("Saving user message")
-        await conversation_history_manager.save_user_message(
-            message=user_message,
-            litellm_user_id=litellm_user_id
-        )
-        
+
+        # 如果存在 overrideParentMessageId，代表目前是修改响应消息 跳过用户消息保存
+        if override_parent_message_id:
+            logger.info(f"Using overrideParentMessageId: {override_parent_message_id}")
+            user_message.message_id = override_parent_message_id
+            logger.info("Skipping user message save due to message override")
+        else:
+            # 只有在非覆盖模式下才保存用户消息
+            logger.info("Saving user message")
+            await conversation_history_manager.save_user_message(
+                message=user_message,
+                litellm_user_id=litellm_user_id
+            )
+
         # 获取 chat_completion 路由
         chat_completion_route = get_route_by_path(request, "/v1/chat/completions")
         
@@ -681,4 +717,65 @@ async def get_user_info(
         raise HTTPException(
             status_code=500,
             detail=f"Failed to get user info: {str(e)}"
+        )
+
+# 定义请求模型
+class ConversationUpdateRequest(BaseModel):
+    arg: Dict[str, str]
+
+@librechat_router.post(
+    "/convos/update",
+    description="更新会话信息，如标题或归档状态"
+)
+async def update_conversation(
+    request: ConversationUpdateRequest,
+    auth_result: CombinedAuthResult = Depends(combined_auth),
+    conversation_history_manager: ConversationHistoryManager = Depends(get_conversation_history_manager)
+):
+    """更新会话信息"""
+    try:
+        conversation_id = request.arg.get("conversationId")
+        if not conversation_id:
+            raise HTTPException(
+                status_code=400,
+                detail="Missing conversationId"
+            )
+            
+        # 构建更新数据
+        update_data = {}
+        
+        # 处理标题更新
+        if "title" in request.arg:
+            update_data["title"] = request.arg["title"]
+            
+        # 处理归档状态更新
+        if "isArchived" in request.arg:
+            update_data["isArchived"] = request.arg["isArchived"]
+            
+        if not update_data:
+            raise HTTPException(
+                status_code=400,
+                detail="No update data provided"
+            )
+            
+        logger.info(f"Updating conversation {conversation_id} with data: {update_data}")
+        
+        # 使用封装的方法处理数据库操作
+        response = await conversation_history_manager.update_conversation(
+            user_id=auth_result.wuban_id,
+            conversation_id=conversation_id,
+            update_data=update_data
+        )
+        
+        logger.info(f"Successfully updated conversation: {conversation_id}")
+        return response
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error in update_conversation endpoint: {str(e)}")
+        logger.error(f"Traceback: {traceback.format_exc()}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to update conversation: {str(e)}"
         )

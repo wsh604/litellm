@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Optional, Dict, Any, List, Tuple
 from dataclasses import dataclass, field
 from litellm.proxy.utils import PrismaClient
@@ -6,6 +6,8 @@ from litellm.proxy._types import UserAPIKeyAuth
 import uuid
 import traceback
 from .logger_util import WubanLogger
+import prisma
+from fastapi import HTTPException
 
 # 重置并获取 logger
 logger = WubanLogger.reset_logger()
@@ -73,7 +75,7 @@ class ChatMessage:
             endpoint_type=message.endpoint_type,
             is_created_by_user=message.is_created_by_user,
             error=message.error if isinstance(message, ErrorMessage) else None,
-            files=message.files if hasattr(message, 'files') else None  # 安全地获取 files
+            files=message.files if hasattr(message, 'files') else None  # 安全获取 files
         )
 
 class ConversationHistoryManager:
@@ -168,21 +170,59 @@ class ConversationHistoryManager:
 
 
     
-    async def save_user_message(self, message: UserMessage, litellm_user_id: str) -> Tuple[str, str]:
-        logger.info(f"Saving user message: {message}")
-        try:            
-            # 确保会话存在
-            await self._ensure_conversation_exists(message, litellm_user_id)
-            # 创建并保存消息
+    async def save_user_message(
+        self, 
+        message: UserMessage, 
+        litellm_user_id: str
+    ) -> Tuple[str, str]:
+        """保存用户消息
+        
+        Args:
+            message: 用户消息对象
+            litellm_user_id: LiteLLM 用户 ID
+            
+        Returns:
+            Tuple[str, str]: (conversation_id, message_id)
+        """
+        try:
+            
+            # 检查并创建会话（如果不存在）
+            await self._ensure_conversation_exists(message, litellm_user_id=litellm_user_id)
+
+            # 3. 创建消息
             chat_message = ChatMessage.from_base_message(message)
-            message_id = await self._save_message(chat_message)
+            message_data = {
+                "messageId": chat_message.message_id,
+                "conversationId": chat_message.conversation_id,
+                "userId": chat_message.user_id,
+                "text": chat_message.text,
+                "sender": chat_message.sender,
+                "parentMessageId": chat_message.parent_message_id,
+                "isCreatedByUser": chat_message.is_created_by_user,
+                "model": chat_message.model,
+                "endpoint": chat_message.endpoint,
+                "endpointType": chat_message.endpoint_type
+            }
             
-            return message.conversation_id, message_id
+            created_message = await self.prisma_client.db.message.create(
+                data=message_data
+            )
             
+            return message.conversation_id, created_message.messageId
+                
+        except prisma.errors.PrismaError as e:
+            logger.error(f"Database error while saving user message: {str(e)}")
+            raise HTTPException(
+                status_code=500,
+                detail="Database error while saving user message"
+            )
         except Exception as e:
             logger.error(f"Error saving user message: {str(e)}")
             logger.error(f"Traceback: {traceback.format_exc()}")
-            raise
+            raise HTTPException(
+                status_code=500,
+                detail=f"Failed to save user message: {str(e)}"
+            )
 
     async def save_assistant_message(self, message: AssistantMessage, litellm_user_id: str) -> str:
         logger.info(f"Saving assistant message: {message}")
@@ -335,30 +375,60 @@ class ConversationHistoryManager:
 
     async def delete_chat_history(
         self,
-        user_api_key_dict: UserAPIKeyAuth,
+        wuban_user_id: str,
         conversation_id: str
-    ):
-        """
-        删除聊天历史记录
-        """
-        # 验证会话属
-        conversation = await self.prisma_client.db.conversation.find_first(
-            where={
-                "conversationId": conversation_id,
-                "userId": user_api_key_dict.user_id
-            }
-        )
+    ) -> Dict[str, int]:
+        """删除聊天历史记录
         
-        if not conversation:
-            raise Exception("Conversation not found or unauthorized")
+        Returns:
+            包含删除消息数量的字典
+        """
+        try:
+            # 先统计消息数量
+            message_count = await self.prisma_client.db.message.count(
+                where={
+                    "conversationId": conversation_id,
+                    "userId": wuban_user_id
+                }
+            )
             
-        # 删除会话相关消息
-        await self.prisma_client.db.messages.delete_many(
-            where={"conversationId": conversation_id}
-        )
-        await self.prisma_client.db.conversation.delete(
-            where={"conversationId": conversation_id}
-        ) 
+            # 先删除所有相关消息
+            await self.prisma_client.db.message.delete_many(
+                where={
+                    "conversationId": conversation_id,
+                    "userId": wuban_user_id
+                }
+            )
+            
+            # 再删除会话
+            await self.prisma_client.db.conversation.delete_many(
+                where={
+                    "conversationId": conversation_id,
+                    "userId": wuban_user_id
+                }
+            )
+            
+            return {
+                "messages_deleted": message_count
+            }
+            
+        except prisma.errors.PrismaError as e:
+            if "Record to delete does not exist" in str(e):
+                raise HTTPException(
+                    status_code=404,
+                    detail="Conversation not found or unauthorized"
+                )
+            logger.error(f"Database error while deleting chat history: {str(e)}")
+            raise HTTPException(
+                status_code=500,
+                detail="Database error while deleting chat history"
+            )
+        except Exception as e:
+            logger.error(f"Error deleting chat history: {str(e)}")
+            raise HTTPException(
+                status_code=500,
+                detail=f"Failed to delete chat history: {str(e)}"
+            )
 
     async def get_conversation_messages(
         self,
@@ -406,3 +476,72 @@ class ConversationHistoryManager:
             logger.error(f"Error getting conversation messages: {str(e)}")
             logger.error(f"Traceback: {traceback.format_exc()}")
             raise Exception(f"Failed to get conversation messages: {str(e)}")
+
+    async def update_conversation(
+        self, 
+        user_id: str, 
+        conversation_id: str, 
+        update_data: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        """更新会话信息（标题或归档状态）"""
+        try:
+            # 1. 更新会话信息
+            conversation = await self.prisma_client.db.conversation.update(
+                where={
+                    "conversationId": conversation_id,
+                    "userId": user_id
+                },
+                data=update_data
+            )
+            
+            if not conversation:
+                raise HTTPException(
+                    status_code=404,
+                    detail=f"Conversation {conversation_id} not found"
+                )
+            
+            # 2. 获取相关消息ID列表
+            messages = await self.prisma_client.db.message.find_many(
+                where={
+                    "conversationId": conversation_id
+                }
+            )
+            
+            # 3. 构建响应
+            return {
+                "_id": str(uuid.uuid4()),
+                "user": user_id,
+                "conversationId": conversation_id,
+                "__v": 0,
+                "createdAt": conversation.createdAt.isoformat(),
+                "endpoint": conversation.endpoint or "",
+                "endpointType": conversation.endpointType or "",
+                "files": [],
+                "isArchived": conversation.isArchived,
+                "messages": [msg.messageId for msg in messages],  # 直接从完整消息对象中获取 messageId
+                "model": conversation.model or "",
+                "resendFiles": True,
+                "tags": [],
+                "title": conversation.title,
+                "updatedAt": conversation.updatedAt.isoformat()
+            }
+            
+        except prisma.errors.PrismaError as e:
+            if "Record to update not found" in str(e):
+                raise HTTPException(
+                    status_code=404,
+                    detail=f"Conversation {conversation_id} not found"
+                )
+            logger.error(f"Database error while updating conversation: {str(e)}")
+            raise HTTPException(
+                status_code=500,
+                detail="Database error while updating conversation"
+            )
+        except HTTPException:
+            raise
+        except Exception as e:
+            logger.error(f"Error updating conversation: {str(e)}")
+            raise HTTPException(
+                status_code=500,
+                detail=f"Failed to update conversation: {str(e)}"
+            )
