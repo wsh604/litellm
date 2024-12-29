@@ -79,3 +79,6 @@ logs/*
 
 sqlite/
 sqlite/*
+
+local_debug/
+local_debug

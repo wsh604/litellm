@@ -1,31 +1,31 @@
-from json import dumps
+import os
+import shutil
+import uuid
+from datetime import datetime
 from typing import Callable
 
-from fastapi import APIRouter, Depends, Header, HTTPException, Request, Response, status
+from fastapi import APIRouter, Depends, Header, HTTPException, Request, Response, status, UploadFile
+from fastapi.params import File
 
-from litellm.proxy._types import (
-    UserAPIKeyAuth,
-)
-from litellm.proxy.auth.user_api_key_auth import user_api_key_auth
 from .WLog import log
+from ..utils import PrismaClient
+from .wuban_auth_service import combined_auth, CombinedAuthResult
 
 TAG = "librechat"
 router = APIRouter()
-model_list: Callable
+
+router.model_list = None
+router.file_upload_prisma_client = None
 
 inner_models = ("azureOpenAI", "openAI", "bingAI", "chatGPTBrowser", "google", "gptPlugins", "anthropic", "assistants", "azureAssistants", "agents", "bedrock")
 
-def set_model_list_def(model_list_from_proxy: Callable):
-    global model_list
-    model_list = model_list_from_proxy
-
 @router.get(
     "/api/models",
-    dependencies=[Depends(user_api_key_auth)],
+    dependencies=[Depends(combined_auth)],
     tags=[TAG]
 )
-async def models(user_api_key_dict: UserAPIKeyAuth = Depends(user_api_key_auth)):
-    originData = await model_list(user_api_key_dict)
+async def models(auth_result: CombinedAuthResult = Depends(combined_auth)):
+    originData = await router.model_list(auth_result.litellm_auth)
     log(TAG, originData)
 
     # myTest = {'data': [{'id': 'deepseek/deepseek-chat', 'object': 'model', 'created': 1677610602, 'owned_by': 'openai'}
@@ -56,11 +56,11 @@ async def models(user_api_key_dict: UserAPIKeyAuth = Depends(user_api_key_auth))
 
 @router.get(
     "/api/endpoints",
-    dependencies=[Depends(user_api_key_auth)],
+    dependencies=[Depends(combined_auth)],
     tags=[TAG]
 )
-async def endpoints(user_api_key_dict: UserAPIKeyAuth = Depends(user_api_key_auth)):
-    models_dict = await models(user_api_key_dict)
+async def endpoints(auth_result: CombinedAuthResult = Depends(combined_auth)):
+    models_dict = await models(auth_result)
     log(TAG, models_dict)
     outData = {}
     idx = 0
@@ -80,7 +80,7 @@ def isInnerModel(name):
 
 @router.get(
     "/api/keys",
-    dependencies=[Depends(user_api_key_auth)],
+    dependencies=[Depends(combined_auth)],
     tags=[TAG]
 )
 async def keys(name):
@@ -90,19 +90,97 @@ async def keys(name):
     }
 
 
-@router.post(
+@router.get(
     "/api/files/images",
-    dependencies=[Depends(user_api_key_auth)],
+    dependencies=[Depends(combined_auth)],
     tags=[TAG]
 )
-async def image():
-    return ""
+async def image(auth_result: CombinedAuthResult = Depends(combined_auth),
+                     files: list[UploadFile] = File(...)):
+    result = await upfile(auth_result, files, "image")
+    return result
 
-
-@router.post(
+@router.get(
     "/api/files",
-    dependencies=[Depends(user_api_key_auth)],
+    dependencies=[Depends(combined_auth)],
     tags=[TAG]
 )
-async def file():
-    return ""
+async def uploadFile(auth_result: CombinedAuthResult = Depends(combined_auth),
+                     files: list[UploadFile] = File(...)):
+    result = await upfile(auth_result, files)
+    return result
+
+async def upfile(auth_result: CombinedAuthResult,
+        files: list[UploadFile], file_type = "file"):
+    """
+    处理多文件上传
+    """
+    saved_file_result = []
+    file_base_dir = ensure_today_dir()
+    for file in files:
+        file_name = _create_file_name(file)
+        file_path = os.path.join(file_base_dir, file_name)
+        directory = os.path.dirname(file_path)
+        if not os.path.exists(directory):
+            os.makedirs(directory)
+        with open(file_path, "wb") as buffer:
+            shutil.copyfileobj(file.file, buffer)
+        ret = await insert_db(file_name, file_type, file_path, auth_result.wuban_id, file)
+        saved_file_result.append(ret)
+    return saved_file_result
+
+async def insert_db(file_new_name, file_type, file_path, user_id, file: UploadFile):
+    base_info = {
+            "bytes": file.size, #文件大小
+            "filename": file.filename, #文件原始名
+            "filepath": file_path, # 文件在服务器上的路径
+            "object": file_type, # 文件类型
+            "source": "custom", # 来源
+            "type": file.content_type, # 文件内容类型
+            "usage": 1,
+            "userId": user_id # 上传用户
+    }
+    if router.file_upload_prisma_client is None:
+        print("db not supported")
+        base_info["msg"] = "db not supported!"
+        return base_info
+
+    # add to db
+    result = await router.file_upload_prisma_client.db.file.create(
+        data= {
+            "fileId": file_new_name,
+            "userId": user_id,
+            "name": file.filename,
+            "type": file.content_type,
+            "size": file.size,
+            "url": file_path,
+            "updatedAt": datetime.now()
+        }
+    )
+    base_info["msg"] = "upload success!"
+    print(result)
+    return base_info
+
+
+def _create_file_name(file: UploadFile):
+    """
+    生成新文件名
+    """
+    # 生成UUID作为新的文件名
+    file_uuid = str(uuid.uuid4())
+    # 获取文件的原始后缀名（例如.txt、.jpg等）
+    file_extension = os.path.splitext(file.filename)[-1]
+    # 组合成新的文件名（UUID + 原始后缀名）
+    return file_uuid + file_extension
+
+
+def ensure_today_dir():
+    current_date = datetime.now().strftime('%Y-%m-%d')
+    # FILE_UPLOAD_BASE_DIR
+    file_base_dir = os.getenv("FILE_UPLOAD_BASE_DIR")
+    if file_base_dir is None:
+        raise Exception("FILE_UPLOAD_BASE_DIR is not config, can't upload file.")
+    work_dir = os.path.join(file_base_dir, current_date)
+    if not os.path.exists(work_dir):
+        os.makedirs(work_dir)
+    return work_dir
