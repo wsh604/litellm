@@ -6,6 +6,7 @@ from typing import Callable
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Request, Response, status, UploadFile
 from fastapi.params import File
+from starlette.responses import FileResponse
 
 from .WLog import log
 from ..utils import PrismaClient
@@ -89,34 +90,55 @@ async def keys(name):
         'expiresAt': "2034-11-17T06:58:35.462Z"
     }
 
-
 @router.get(
+    "/api/cdn/{file_path:path}",
+    tags=[TAG]
+)
+async def upload_file(file_path: str):
+    """
+    根据path查找到对应的文件内容。
+    """
+    file_base_dir = os.getenv("FILE_UPLOAD_BASE_DIR")
+    real_full_path = os.path.join(file_base_dir, file_path)
+    if not os.path.isfile(real_full_path):
+        raise HTTPException(status_code=404, detail="File not found")
+    return FileResponse(real_full_path)
+
+
+@router.post(
     "/api/files/images",
     dependencies=[Depends(combined_auth)],
     tags=[TAG]
 )
 async def image(auth_result: CombinedAuthResult = Depends(combined_auth),
-                     files: list[UploadFile] = File(...)):
-    result = await upfile(auth_result, files, "image")
-    return result
+                     file: UploadFile = File()):
+    """
+    单图上传
+    """
+    result = await upload_file_inner(auth_result, [file], "image")
+    return result[0]
 
-@router.get(
+
+@router.post(
     "/api/files",
     dependencies=[Depends(combined_auth)],
     tags=[TAG]
 )
-async def uploadFile(auth_result: CombinedAuthResult = Depends(combined_auth),
-                     files: list[UploadFile] = File(...)):
-    result = await upfile(auth_result, files)
-    return result
+async def upload_file(auth_result: CombinedAuthResult = Depends(combined_auth),
+                      file: UploadFile = File()):
+    """
+    单文件上传
+    """
+    result = await upload_file_inner(auth_result, [file])
+    return result[0]
 
-async def upfile(auth_result: CombinedAuthResult,
-        files: list[UploadFile], file_type = "file"):
+async def upload_file_inner(auth_result: CombinedAuthResult,
+                            files: list[UploadFile], file_type = "file"):
     """
     处理多文件上传
     """
     saved_file_result = []
-    file_base_dir = ensure_today_dir()
+    file_base_dir, current_date  = ensure_today_dir()
     for file in files:
         file_name = _create_file_name(file)
         file_path = os.path.join(file_base_dir, file_name)
@@ -125,7 +147,8 @@ async def upfile(auth_result: CombinedAuthResult,
             os.makedirs(directory)
         with open(file_path, "wb") as buffer:
             shutil.copyfileobj(file.file, buffer)
-        ret = await insert_db(file_name, file_type, file_path, auth_result.wuban_id, file)
+        saved_path = os.path.join(current_date, file_name)
+        ret = await insert_db(file_name, file_type, saved_path, auth_result.wuban_id, file)
         saved_file_result.append(ret)
     return saved_file_result
 
@@ -133,7 +156,7 @@ async def insert_db(file_new_name, file_type, file_path, user_id, file: UploadFi
     base_info = {
             "bytes": file.size, #文件大小
             "filename": file.filename, #文件原始名
-            "filepath": file_path, # 文件在服务器上的路径
+            "filepath": "/api/cdn/" + str(file_path), # 文件在服务器上的路径
             "object": file_type, # 文件类型
             "source": "custom", # 来源
             "type": file.content_type, # 文件内容类型
@@ -142,11 +165,11 @@ async def insert_db(file_new_name, file_type, file_path, user_id, file: UploadFi
     }
     if router.file_upload_prisma_client is None:
         print("db not supported")
-        base_info["msg"] = "db not supported!"
+        base_info["message"] = "db not supported!"
         return base_info
 
     # add to db
-    result = await router.file_upload_prisma_client.db.file.create(
+    result: File = await router.file_upload_prisma_client.db.file.create(
         data= {
             "fileId": file_new_name,
             "userId": user_id,
@@ -157,7 +180,8 @@ async def insert_db(file_new_name, file_type, file_path, user_id, file: UploadFi
             "updatedAt": datetime.now()
         }
     )
-    base_info["msg"] = "upload success!"
+    base_info["message"] = "File uploaded and processed successfully"
+    base_info["_id"] = str(result.id)
     print(result)
     return base_info
 
@@ -183,4 +207,6 @@ def ensure_today_dir():
     work_dir = os.path.join(file_base_dir, current_date)
     if not os.path.exists(work_dir):
         os.makedirs(work_dir)
-    return work_dir
+    return work_dir, current_date
+
+
