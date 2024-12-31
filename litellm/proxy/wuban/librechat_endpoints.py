@@ -1,6 +1,7 @@
 from datetime import datetime
 from fastapi import APIRouter, Depends, Request, Response, HTTPException
 from pydantic.main import BaseModel
+from litellm import router
 from litellm.proxy.auth.user_api_key_auth import user_api_key_auth
 from litellm.proxy.wuban.conversation_history_manager import (
     ConversationHistoryManager, 
@@ -21,6 +22,8 @@ import base64
 import aiohttp
 import os
 from .wuban_user_service import WubanUserService, WubanUserInfo
+from litellm.proxy.wuban.models import router as wuban_model_router
+import yaml
 
 # 获取 WubanLogger 实例
 logger = WubanLogger.get_logger()
@@ -477,6 +480,63 @@ async def process_files(files: List[Dict]) -> List[Dict]:
             
     return processed_files
 
+async def check_model_capabilities(model_name: str, files: List[Dict], auth_result: CombinedAuthResult) -> Tuple[bool, str]:
+    """检查模型是否支持文件处理能力"""
+    return True, ""
+    # logger.info(f"Checking model capabilities for {model_name} with files: {files}")
+    # if not files:  # 如果没有文件,则不需要检查
+    #     return True, ""
+        
+    # try:
+    #     # 获取配置文件路径
+    #     cwd = os.getcwd()  # 获取当前工作目录
+    #     config_paths = [
+    #         os.path.join(cwd, 'lite_config.yaml'),  # 当前工作目录
+    #         os.getenv('CONFIG_FILE_PATH'),          # 环境变量
+    #         '/app/lite_config.yaml',                # Docker 环境
+    #     ]
+    #     logger.debug(f"Current working directory: {cwd}")
+        
+    #     # 读取配置文件
+    #     config = None
+    #     for path in config_paths:
+    #         if path and os.path.exists(path):
+    #             logger.debug(f"Found config file at: {path}")
+    #             with open(path, 'r') as f:
+    #                 config = yaml.safe_load(f)
+    #                 break
+                    
+    #     if config is None:
+    #         raise Exception(f"Could not find lite_config.yaml in any location. Searched paths: {config_paths}")
+            
+    #     # 在配置中查找对应的模型
+    #     model_config = None
+    #     for m in config.get('model_list', []):
+    #         # 修改匹配逻辑，使用 model_name 而不是 model
+    #         if m['model_name'] == model_name:
+    #             model_config = m
+    #             break
+                
+    #     if model_config is None:
+    #         logger.warning(f"Model {model_name} not found in configuration")
+    #         return False, f"Model {model_name} not found in configuration"
+            
+    #     # 从配置中获取 capabilities
+    #     capabilities = model_config.get("litellm_params", {}).get("capabilities", [])
+    #     logger.debug(f"Model {model_name} capabilities from config: {capabilities}")
+        
+    #     # 检查每个文件类型是否被支持
+    #     for file in files:
+    #         file_type = file.get("type", "").split("/")[0]  # "image/jpeg" -> "image"
+    #         if not capabilities or file_type not in capabilities:
+    #             return False, f"Model {model_name} does not support {file_type} input"
+                
+    #     return True, ""
+        
+    # except Exception as e:
+    #     logger.error(f"Error checking model capabilities: {str(e)}")
+    #     logger.error(f"Traceback: {traceback.format_exc()}")
+    #     return False, f"Error checking model capabilities: {str(e)}"
 # chat_completion_with_history 方法
 @librechat_router.post("/ask/{model}")
 async def chat_completion_with_history(
@@ -537,6 +597,7 @@ async def chat_completion_with_history(
         
         # 重构请求数据为所需格式
         messages = []
+        warning_message = None
         
         # 如果有上下文消息，添加到消息列表中
         generation = data.get("generation", "")
@@ -546,37 +607,55 @@ async def chat_completion_with_history(
                 "content": generation
             })
         
-        processed_files = await process_files(files)
-        # 添加当前用户消息
-        if processed_files:
-            # 如果有文件，使用复杂的消息格式
-            messages.append({
-                "role": "user",
-                "content": [
-                    {"type": "text", "text": data["text"]},
-                    *[{
-                        "type": file["type"].split('/')[0],
-                        file["type"].split('/')[0]: {
-                            "data": file["base64"],
-                            "height": file.get("height"),
-                            "width": file.get("width")
-                        }
-                    } for file in processed_files]
-                ]
-            })
+        if files:
+            # 检查模型是否支持文件处理能力
+            is_supported, error_message = await check_model_capabilities(f"{data.get('endpoint', '')}/{data.get('model')}", files, auth_result)
+            logger.info(f"Model capabilities check result: is_supported={is_supported}, error_message={error_message}")
+            
+            if not is_supported:
+                # 记录警告消息
+                warning_message = f"注意：{error_message}。我将只处理文本内容。"
+                # 只处理文本部分
+                messages.append({
+                    "role": "user",
+                    "content": data["text"]
+                })
+            else:
+                # 模型支持文件处理，正常处理
+                processed_files = await process_files(files)
+                messages.append({
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": data["text"]},
+                        *[{
+                            "type": file["type"].split('/')[0],
+                            file["type"].split('/')[0]: {
+                                "data": file["base64"],
+                                "height": file.get("height"),
+                                "width": file.get("width")
+                            }
+                        } for file in processed_files]
+                    ]
+                })
         else:
-            # 如果没有文件，使用简单的消息格式
+            # 没有文件，使用简单的消息格式
             messages.append({
                 "role": "user",
                 "content": data["text"]
             })
 
+        # 如果有警告消息，添加到用户输入前
+        # if warning_message:
+        #     messages.insert(0, {
+        #         "role": "system",
+        #         "content": warning_message
+        #     })
+
         formatted_data = {
             "model": f"{endpoint}/{model_name}",
-            "messages": messages,  # 使用包含上下文的消息列表
+            "messages": messages,
             "endpoint": endpoint,
-            "stream": is_streaming,
-            "max_tokens": 4000
+            "stream": is_streaming
         }
         
         # 创建新的请求对象并设置请求体

@@ -7,18 +7,20 @@ model_list:
       timeout: 30
       stream_timeout: 30
       temperature: 0.7
-      max_tokens: 100
+      max_tokens: 3000
       top_p: 0.9
       owned_by: openAI
+      capabilities: ["text"]
   - model_name: deepseek/deepseek/deepseek-chat
     litellm_params:
       model: deepseek/deepseek-chat
       api_key: sk-354c3ec4f73542f681d15f2369d9fa95
+      capabilities: ["text"]
   - model_name: deepseek/deepseek/deepseek-code
     litellm_params:
       model: deepseek/deepseek-code-test
       api_key: sk-354c3ec4f73542f681d15f2369d9fa95
-
+      capabilities: ["text"]
 litellm_settings:
   drop_params: True
   num_retries: 5
