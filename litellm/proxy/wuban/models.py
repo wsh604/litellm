@@ -5,7 +5,7 @@ from datetime import datetime
 from typing import Callable
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Request, Response, status, UploadFile
-from fastapi.params import File
+from fastapi.params import File, Form
 from starlette.responses import FileResponse
 
 from .WLog import log
@@ -111,11 +111,13 @@ async def upload_file(file_path: str):
     tags=[TAG]
 )
 async def image(auth_result: CombinedAuthResult = Depends(combined_auth),
-                     file: UploadFile = File()):
+                     file: UploadFile = File(),
+                     file_id: str = Form(...)):
     """
     单图上传
     """
     result = await upload_file_inner(auth_result, [file], "image")
+    result[0]["temp_file_id"] = file_id
     return result[0]
 
 
@@ -125,11 +127,13 @@ async def image(auth_result: CombinedAuthResult = Depends(combined_auth),
     tags=[TAG]
 )
 async def upload_file(auth_result: CombinedAuthResult = Depends(combined_auth),
-                      file: UploadFile = File()):
+                      file: UploadFile = File(),
+                      file_id: str = Form(...)):
     """
     单文件上传
     """
     result = await upload_file_inner(auth_result, [file])
+    result[0]["temp_file_id"] = file_id
     return result[0]
 
 async def upload_file_inner(auth_result: CombinedAuthResult,
@@ -209,4 +213,45 @@ def ensure_today_dir():
         os.makedirs(work_dir)
     return work_dir, current_date
 
+@router.get(
+    "/api/files",
+    dependencies=[Depends(combined_auth)],
+    tags=["files"]
+)
+async def get_files(auth_result: CombinedAuthResult = Depends(combined_auth),
+                     page:int = 1,
+                     size:int = 20):
+    return await get_db_files(auth_result, page, size)
 
+@router.get(
+    "/api/files/images",
+    dependencies=[Depends(combined_auth)],
+    tags=["files/images"]
+)
+async def get_db_files(auth_result: CombinedAuthResult = Depends(combined_auth),
+                       page:int = 1,
+                       size:int = 20):
+    user_id = auth_result.wuban_id
+    where = {
+        "userId": user_id
+    }
+    skip = (page - 1) * size
+    result = await router.file_upload_prisma_client.db.file.find_many(
+        where=where,  # type: ignore
+        skip=skip,  # type: ignore
+        take=size )
+    return list(map(lambda item: transform_file_2_resp(item), result))
+
+def transform_file_2_resp(file):
+    return {
+        "_id": file.id,
+        "file_id": file.fileId,
+        "bytes": file.size,
+        "createdAt": file.createdAt,
+        "filename": file.name,
+        "filepath": "/api/cdn/" + str(file.url),
+        "source": "custom",
+        "type": file.type,
+        "updatedAt": file.updatedAt,
+        "user": file.userId
+    }
