@@ -75,7 +75,7 @@ class ChatMessage:
             endpoint_type=message.endpoint_type,
             is_created_by_user=message.is_created_by_user,
             error=message.error if isinstance(message, ErrorMessage) else None,
-            files=message.files if hasattr(message, 'files') else None  # 安全获取 files
+            files=message.files if hasattr(message, 'files') else None
         )
 
 class ConversationHistoryManager:
@@ -191,24 +191,8 @@ class ConversationHistoryManager:
 
             # 3. 创建消息
             chat_message = ChatMessage.from_base_message(message)
-            message_data = {
-                "messageId": chat_message.message_id,
-                "conversationId": chat_message.conversation_id,
-                "userId": chat_message.user_id,
-                "text": chat_message.text,
-                "sender": chat_message.sender,
-                "parentMessageId": chat_message.parent_message_id,
-                "isCreatedByUser": chat_message.is_created_by_user,
-                "model": chat_message.model,
-                "endpoint": chat_message.endpoint,
-                "endpointType": chat_message.endpoint_type
-            }
-            
-            created_message = await self.prisma_client.db.message.create(
-                data=message_data
-            )
-            
-            return message.conversation_id, created_message.messageId
+           
+            return await self._save_message(chat_message)
                 
         except prisma.errors.PrismaError as e:
             logger.error(f"Database error while saving user message: {str(e)}")
@@ -278,26 +262,15 @@ class ConversationHistoryManager:
         if message.files:
             for file_info in message.files:
                 try:
-                    # 创建文件记录
-                    file = await self.prisma_client.db.file.create(
-                        data={
-                            "fileId": file_info["file_id"],
-                            "userId": message.user_id,
-                            "name": file_info.get("name", "unnamed"),
-                            "type": file_info["type"],
-                            "url": file_info.get("filepath", "")
-                        }
-                    )
-
                     # 创建消息-文件关联
                     await self.prisma_client.db.messagefile.create(
                         data={
                             "messageId": message.message_id,
-                            "fileId": file.fileId
+                            "fileId": file_info["_id"]  # 直接使用已存在文件的ID
                         }
                     )
                 except Exception as e:
-                    logger.error(f"Error saving file {file_info.get('file_id')}: {str(e)}")
+                    logger.error(f"Error saving file {file_info.get('_id')}: {str(e)}")
                     continue
 
         return message.message_id

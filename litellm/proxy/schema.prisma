@@ -418,7 +418,7 @@ model MessageFile {
   id          String    @id @default(uuid())
   message     Message   @relation(fields: [messageId], references: [messageId])
   messageId   String
-  file        File     @relation(fields: [fileId], references: [fileId])
+  file        File     @relation(fields: [fileId], references: [id])
   fileId      String
 
   createdAt   DateTime @default(now())

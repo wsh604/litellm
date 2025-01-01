@@ -1,11 +1,78 @@
-docs
-cookbook
-.circleci
-.github
-tests
+# 版本控制
 .git
-.github
-.circleci
-.devcontainer
-*.tgz
-log.txt
+.gitignore
+.gitattributes
+
+# 开发环境
+__pycache__
+*.pyc
+*.pyo
+*.pyd
+.Python
+env/
+venv/
+.env
+.venv
+pip-log.txt
+pip-delete-this-directory.txt
+.tox/
+.coverage
+.coverage.*
+.cache
+nosetests.xml
+coverage.xml
+*.cover
+*.log
+
+# 部署相关
+deploy.env
+deploy.env.example
+deploy_to_openwrt.sh
+Dockerfile*
+docker-compose*
+.dockerignore
+
+# 测试
+tests/
+test/
+pytest.ini
+.pytest_cache/
+
+# 文档
+docs/
+LICENSE
+
+# IDE 配置
+.idea/
+.vscode/
+*.swp
+*.swo
+*.swn
+*.bak
+
+# 系统文件
+.DS_Store
+Thumbs.db
+
+# 数据文件
+*.db
+*.sqlite
+data/
+files/
+sqlite/
+
+# 日志
+logs/
+*.log
+
+# 临时文件
+tmp/
+temp/
+.tmp/
+.temp/
+
+# Node.js (如果有前端代码)
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*

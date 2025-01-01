@@ -53,10 +53,11 @@ cp enterprise/enterprise_ui/enterprise_colors.json ui/litellm-dashboard/ui_color
 cd ui/litellm-dashboard
 
 # ensure have access to build_ui.sh
-chmod +x ./build_ui.sh
-
+# chmod +x ./build_ui.sh
+chmod +x ./build_ui_custom_path.sh
 # run ./build_ui.sh
-./build_ui.sh
+# ./build_ui.sh
+./build_ui_custom_path.sh "/chat/ui"
 
 # return to root directory
 cd ../..

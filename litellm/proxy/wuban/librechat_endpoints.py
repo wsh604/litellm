@@ -24,6 +24,7 @@ import os
 from .wuban_user_service import WubanUserService, WubanUserInfo
 from litellm.proxy.wuban.models import router as wuban_model_router
 import yaml
+from .model_capabilities import model_capabilities_manager
 
 # 获取 WubanLogger 实例
 logger = WubanLogger.get_logger()
@@ -231,7 +232,7 @@ class StreamEventManager:
         try:
             # 转换为字符串
             chunk_str = chunk if isinstance(chunk, str) else chunk.decode('utf-8')
-            self.logger.debug(f"Raw chunk: {chunk_str}")
+            # self.logger.debug(f"Raw chunk: {chunk_str}")
             
             # 处理特殊情况
             if chunk_str.strip() == "":
@@ -249,7 +250,7 @@ class StreamEventManager:
         """从 chunk 中提取内容"""
         try:
             chunk_data = json.loads(chunk_str)
-            self.logger.debug(f"Parsed JSON: {chunk_data}")
+            # self.logger.debug(f"Parsed JSON: {chunk_data}")
             
             if chunk_data.get("choices"):
                 # 检查是否有完成标志
@@ -270,7 +271,7 @@ class StreamEventManager:
                     content = chunk_data["choices"][0].get("text", "")
                 
                 if content:
-                    self.logger.debug(f"Extracted content: {content}")
+                    # self.logger.debug(f"Extracted content: {content}")
                     return content
             return None
         except json.JSONDecodeError as e:
@@ -289,7 +290,7 @@ class StreamEventManager:
         if self.first_chunk:
             event_data["initial"] = True
             self.first_chunk = False
-            self.logger.info("Added 'created' flag to first chunk")
+            # self.logger.info("Added 'created' flag to first chunk")
         
         return self._format_event("message", event_data)
     
@@ -453,6 +454,44 @@ async def download_and_encode_file(file_info: Dict) -> str:
         logger.error(f"Error processing file {file_info.get('file_id')}: {str(e)}")
         raise
 
+def get_file_content_type(file_type: str) -> str:
+    """获取文件内容类型"""
+    type_mapping = {
+        "image/jpeg": "image",
+        "image/png": "image", 
+        "image/gif": "image",
+        "image/webp": "image",
+        "application/pdf": "file",
+        "text/plain": "text",
+        "text/markdown": "text",
+        "text/csv": "file",
+        "application/vnd.openxmlformats-officedocument.presentationml.presentation": "file", # PPTX
+        "application/vnd.ms-powerpoint": "file", # PPT
+        "application/vnd.openxmlformats-officedocument.wordprocessingml.document": "file", # DOCX 
+        "application/msword": "file", # DOC
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": "file", # XLSX
+        "application/vnd.ms-excel": "file", # XLS
+        "application/zip": "file",
+        "application/x-zip-compressed": "file",
+        "application/json": "file",
+        "application/xml": "file",
+        # 可以添加更多类型
+    }
+    
+    # 如果是已知类型，直接返回映射
+    if file_type in type_mapping:
+        return type_mapping[file_type]
+    
+    # 如果是 mime type，检查第一部分
+    if "/" in file_type:
+        main_type = file_type.split('/')[0]
+        if main_type == "image":
+            return "image"
+        elif main_type == "text":
+            return "text"
+    
+    return "file"  # 默认类型
+
 async def process_files(files: List[Dict]) -> List[Dict]:
     """处理文件列表，返回包含 base64 编码的文件信息"""
     if not files:
@@ -463,80 +502,31 @@ async def process_files(files: List[Dict]) -> List[Dict]:
         try:
             base64_content = await download_and_encode_file(file_info)
             processed_file = {
-                "file_id": file_info["file_id"],
-                "type": file_info["type"],
-                "base64": base64_content
+                "file_id": file_info["_id"],
+                "type": file_info["type"].lower(),  # 统一转换为小写
+                "base64": base64_content,
+                "filename": file_info.get("filename", f"file_{file_info['_id']}"),  # 添加文件名
+                "mime_type": file_info["type"].lower()  # 保留原始 mime type
             }
-            # 如果有图片尺寸信息，添加到处理后的文件信息中
-            if "height" in file_info and "width" in file_info:
-                processed_file["height"] = file_info["height"]
-                processed_file["width"] = file_info["width"]
+            
+            # 复制所有可能的额外属性
+            for key in ["height", "width", "bytes"]:
+                if key in file_info:
+                    processed_file[key] = file_info[key]
                 
             processed_files.append(processed_file)
+            logger.debug(f"Processed file: {processed_file['filename']} ({processed_file['type']})")
             
         except Exception as e:
-            logger.error(f"Failed to process file: {str(e)}")
+            logger.error(f"Failed to process file {file_info.get('file_id')}: {str(e)}")
             continue
             
     return processed_files
 
-async def check_model_capabilities(model_name: str, files: List[Dict], auth_result: CombinedAuthResult) -> Tuple[bool, str]:
+async def check_model_capabilities(model_name: str, files: List[Dict]) -> Tuple[bool, str]:
     """检查模型是否支持文件处理能力"""
-    return True, ""
-    # logger.info(f"Checking model capabilities for {model_name} with files: {files}")
-    # if not files:  # 如果没有文件,则不需要检查
-    #     return True, ""
-        
-    # try:
-    #     # 获取配置文件路径
-    #     cwd = os.getcwd()  # 获取当前工作目录
-    #     config_paths = [
-    #         os.path.join(cwd, 'lite_config.yaml'),  # 当前工作目录
-    #         os.getenv('CONFIG_FILE_PATH'),          # 环境变量
-    #         '/app/lite_config.yaml',                # Docker 环境
-    #     ]
-    #     logger.debug(f"Current working directory: {cwd}")
-        
-    #     # 读取配置文件
-    #     config = None
-    #     for path in config_paths:
-    #         if path and os.path.exists(path):
-    #             logger.debug(f"Found config file at: {path}")
-    #             with open(path, 'r') as f:
-    #                 config = yaml.safe_load(f)
-    #                 break
-                    
-    #     if config is None:
-    #         raise Exception(f"Could not find lite_config.yaml in any location. Searched paths: {config_paths}")
-            
-    #     # 在配置中查找对应的模型
-    #     model_config = None
-    #     for m in config.get('model_list', []):
-    #         # 修改匹配逻辑，使用 model_name 而不是 model
-    #         if m['model_name'] == model_name:
-    #             model_config = m
-    #             break
-                
-    #     if model_config is None:
-    #         logger.warning(f"Model {model_name} not found in configuration")
-    #         return False, f"Model {model_name} not found in configuration"
-            
-    #     # 从配置中获取 capabilities
-    #     capabilities = model_config.get("litellm_params", {}).get("capabilities", [])
-    #     logger.debug(f"Model {model_name} capabilities from config: {capabilities}")
-        
-    #     # 检查每个文件类型是否被支持
-    #     for file in files:
-    #         file_type = file.get("type", "").split("/")[0]  # "image/jpeg" -> "image"
-    #         if not capabilities or file_type not in capabilities:
-    #             return False, f"Model {model_name} does not support {file_type} input"
-                
-    #     return True, ""
-        
-    # except Exception as e:
-    #     logger.error(f"Error checking model capabilities: {str(e)}")
-    #     logger.error(f"Traceback: {traceback.format_exc()}")
-    #     return False, f"Error checking model capabilities: {str(e)}"
+    return model_capabilities_manager.check_capabilities(model_name, files)
+
 # chat_completion_with_history 方法
 @librechat_router.post("/ask/{model}")
 async def chat_completion_with_history(
@@ -609,36 +599,46 @@ async def chat_completion_with_history(
         
         if files:
             # 检查模型是否支持文件处理能力
-            is_supported, error_message = await check_model_capabilities(f"{data.get('endpoint', '')}/{data.get('model')}", files, auth_result)
+            is_supported, error_message = await check_model_capabilities(f"{data.get('endpoint', '')}/{data.get('model')}", files)
             logger.info(f"Model capabilities check result: is_supported={is_supported}, error_message={error_message}")
             
             if not is_supported:
-                # 记录警告消息
                 warning_message = f"注意：{error_message}。我将只处理文本内容。"
-                # 只处理文本部分
                 messages.append({
                     "role": "user",
                     "content": data["text"]
                 })
             else:
-                # 模型支持文件处理，正常处理
-                processed_files = await process_files(files)
-                messages.append({
-                    "role": "user",
-                    "content": [
-                        {"type": "text", "text": data["text"]},
-                        *[{
-                            "type": file["type"].split('/')[0],
-                            file["type"].split('/')[0]: {
-                                "data": file["base64"],
-                                "height": file.get("height"),
-                                "width": file.get("width")
-                            }
-                        } for file in processed_files]
-                    ]
-                })
+                try:
+                    # 模型支持文件处理，尝试处理文件
+                    processed_files = await process_files(files)
+                    
+                    if not processed_files:  # 如果所有文件处理都失败了
+                        warning_message = "注意：所有文件处理失败，我将只处理文本内容。"
+                        messages.append({
+                            "role": "user",
+                            "content": data["text"]
+                        })
+                    else:
+                        messages.append({
+                            "role": "user",
+                            "content": [
+                                {"type": "text", "text": data["text"]},
+                                *[format_file_content(file) for file in processed_files]
+                            ]
+                        })
+                        
+                        if len(processed_files) < len(files):  # 如果有部分文件处理失败
+                            warning_message = f"注意：{len(files) - len(processed_files)} 个文件处理失败，我将只处理成功的文件。"
+                            
+                except Exception as e:
+                    logger.error(f"Error processing files: {str(e)}")
+                    warning_message = "注意：文件处理过程中出错，我将只处理文本内容。"
+                    messages.append({
+                        "role": "user",
+                        "content": data["text"]
+                    })
         else:
-            # 没有文件，使用简单的消息格式
             messages.append({
                 "role": "user",
                 "content": data["text"]
@@ -651,18 +651,31 @@ async def chat_completion_with_history(
         #         "content": warning_message
         #     })
 
+        # 在构建 formatted_data 之前
+        logger.debug(f"Raw messages before formatting: {messages}")
+
         formatted_data = {
             "model": f"{endpoint}/{model_name}",
             "messages": messages,
             "endpoint": endpoint,
             "stream": is_streaming
         }
-        
-        # 创建新的请求对象并设置请求体
+
+        # 在序列化前后添加日志
+        logger.debug(f"Before serialization formatted_data: {formatted_data}")
+        try:
+            serialized_data = json.dumps(formatted_data)
+            logger.debug(f"After serialization: {serialized_data}")
+        except Exception as e:
+            logger.error(f"Serialization error: {str(e)}")
+            logger.error(f"Traceback: {traceback.format_exc()}")
+            raise
+
+        # 创建新的请求对象
         async def mock_receive():
             return {
                 "type": "http.request",
-                "body": json.dumps(formatted_data).encode(),
+                "body": serialized_data.encode(),
                 "more_body": False
             }
 
@@ -674,6 +687,10 @@ async def chat_completion_with_history(
             },
             receive=mock_receive
         )
+
+        # 在调用路由前记录最终请求
+        logger.debug(f"Final request path: {new_request.scope['path']}")
+        logger.debug(f"Final request method: {new_request.scope['method']}")
 
         # 调用 chat_completion
         logger.info(f"Calling chat completion endpoint with data: {formatted_data}")
@@ -858,3 +875,37 @@ async def update_conversation(
             status_code=500,
             detail=f"Failed to update conversation: {str(e)}"
         )
+
+def format_file_content(file: Dict) -> Dict:
+    """格式化文件内容为消息格式"""
+    file_type = get_file_content_type(file["type"])
+    # data:image/jpeg;base64,/9j/4AAQSkZJRg...  符合 RFC 2397 标准
+    base64_url = f"data:{file['mime_type']};base64,{file['base64']}"
+    
+    # 基础内容
+    if file_type == "image":
+        content = {
+            "type": "image_url",
+            "image_url": {
+                "url": base64_url
+            }
+        }
+        # 添加可选的图片属性
+        if "height" in file:
+            content["image_url"]["height"] = file["height"]
+        if "width" in file:
+            content["image_url"]["width"] = file["width"]
+    else:
+        content = {
+            "type": "file_url",
+            "file_url": {
+                "url": base64_url,
+                "mime_type": file["mime_type"]
+            }
+        }        # 添加文件名等可选属性
+        if "filename" in file:
+            content["file_url"]["name"] = file["filename"]
+        if "bytes" in file:
+            content["file_url"]["size"] = file["bytes"]
+    
+    return content

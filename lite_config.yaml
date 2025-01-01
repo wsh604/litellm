@@ -40,3 +40,4 @@ general_settings:
   store_model_in_db: True
   fallback_strategy: "retry"
   disable_adding_master_key_hash_to_db: false
+  ui_path: "/chat/ui"
