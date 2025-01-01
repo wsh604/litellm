@@ -418,6 +418,13 @@ class ConversationHistoryManager:
                 },
                 order={
                     "createdAt": "asc"  # 按时间正序排列消息
+                },
+                include={
+                    "files": {
+                        "include": {
+                            "file": True  # 包含关联的文件信息
+                        }
+                    }
                 }
             )
             
@@ -436,6 +443,23 @@ class ConversationHistoryManager:
                     "endpoint": msg.endpoint,
                     "createdAt": msg.createdAt
                 }
+                
+                # 处理文件信息
+                if msg.files:
+                    message_dict["files"] = [
+                        {
+                            "bytes": file.file.size,  # 从 file 表获取
+                            "filename": file.file.name,
+                            "filepath": file.file.url,
+                            "object": "file",  # 固定值
+                            "source": "local",  # 固定值
+                            "type": file.file.type,
+                            "usage": "attachment",  # 固定值
+                            "userId": file.file.userId,
+                            "fileId": file.file.fileId
+                        }
+                        for file in msg.files
+                    ]
                 
                 # 只有当 endpointType 不为空时才添加
                 if msg.endpointType:

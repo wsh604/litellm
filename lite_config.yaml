@@ -10,17 +10,30 @@ model_list:
       max_tokens: 3000
       top_p: 0.9
       owned_by: openAI
-      capabilities: ["text"]
+    model_info:
+      supports_vision: false
+      supports_audio: false
+      supports_file: false
+      capabilities: ["text", "chat", "stream"]
   - model_name: deepseek/deepseek/deepseek-chat
     litellm_params:
       model: deepseek/deepseek-chat
       api_key: sk-354c3ec4f73542f681d15f2369d9fa95
-      capabilities: ["text"]
+    model_info:
+      supports_vision: false
+      supports_audio: false
+      supports_file: false
+      capabilities: ["text", "chat", "function-calling"]
   - model_name: deepseek/deepseek/deepseek-code
     litellm_params:
       model: deepseek/deepseek-code-test
       api_key: sk-354c3ec4f73542f681d15f2369d9fa95
-      capabilities: ["text"]
+    model_info:
+      supports_vision: false
+      supports_audio: false
+      supports_file: true
+      capabilities: ["text", "chat", "code-completion", "code-generation"]
+
 litellm_settings:
   drop_params: True
   num_retries: 5
@@ -40,4 +53,3 @@ general_settings:
   store_model_in_db: True
   fallback_strategy: "retry"
   disable_adding_master_key_hash_to_db: false
-  ui_path: "/chat/ui"

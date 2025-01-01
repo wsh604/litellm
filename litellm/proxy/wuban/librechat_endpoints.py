@@ -22,8 +22,6 @@ import base64
 import aiohttp
 import os
 from .wuban_user_service import WubanUserService, WubanUserInfo
-from litellm.proxy.wuban.models import router as wuban_model_router
-import yaml
 from .model_capabilities import model_capabilities_manager
 
 # 获取 WubanLogger 实例
@@ -455,33 +453,6 @@ async def download_and_encode_file(file_info: Dict) -> str:
         raise
 
 def get_file_content_type(file_type: str) -> str:
-    """获取文件内容类型"""
-    type_mapping = {
-        "image/jpeg": "image",
-        "image/png": "image", 
-        "image/gif": "image",
-        "image/webp": "image",
-        "application/pdf": "file",
-        "text/plain": "text",
-        "text/markdown": "text",
-        "text/csv": "file",
-        "application/vnd.openxmlformats-officedocument.presentationml.presentation": "file", # PPTX
-        "application/vnd.ms-powerpoint": "file", # PPT
-        "application/vnd.openxmlformats-officedocument.wordprocessingml.document": "file", # DOCX 
-        "application/msword": "file", # DOC
-        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": "file", # XLSX
-        "application/vnd.ms-excel": "file", # XLS
-        "application/zip": "file",
-        "application/x-zip-compressed": "file",
-        "application/json": "file",
-        "application/xml": "file",
-        # 可以添加更多类型
-    }
-    
-    # 如果是已知类型，直接返回映射
-    if file_type in type_mapping:
-        return type_mapping[file_type]
-    
     # 如果是 mime type，检查第一部分
     if "/" in file_type:
         main_type = file_type.split('/')[0]
@@ -489,6 +460,8 @@ def get_file_content_type(file_type: str) -> str:
             return "image"
         elif main_type == "text":
             return "text"
+        elif main_type == "audio":
+            return "audio"  
     
     return "file"  # 默认类型
 
@@ -523,9 +496,30 @@ async def process_files(files: List[Dict]) -> List[Dict]:
             
     return processed_files
 
-async def check_model_capabilities(model_name: str, files: List[Dict]) -> Tuple[bool, str]:
-    """检查模型是否支持文件处理能力"""
-    return model_capabilities_manager.check_capabilities(model_name, files)
+async def transcribe_audio(file: Dict) -> str:
+    """将音频文件转写为文本"""
+    try:
+        audio_base64 = file["base64"]
+        
+        # 直接使用 OpenAI Whisper 模型
+        response = await router.acompletion(
+            model="whisper-1",  # OpenAI 的 Whisper 模型
+            messages=[{
+                "role": "user",
+                "content": [{
+                    "type": "audio",
+                    "audio": audio_base64,
+                    "mime_type": file["mime_type"]
+                }]
+            }],
+            api_key=os.getenv("OPENAI_API_KEY")  # 直接使用环境变量中的 API key
+        )
+        
+        return response.choices[0].message.content
+        
+    except Exception as e:
+        logger.error(f"Error transcribing audio: {str(e)}")
+        return f"[Audio transcription failed: {str(e)}]"
 
 # chat_completion_with_history 方法
 @librechat_router.post("/ask/{model}")
@@ -566,7 +560,7 @@ async def chat_completion_with_history(
             conversation_id=conversation_id,
             parent_message_id=parent_message_id,
             endpoint=endpoint,
-            endpoint_type=endpoint_type  # 添加 endpoint_type
+            endpoint_type=endpoint_type
         )
 
         # 如果存在 overrideParentMessageId，代表目前是修改响应消息 跳过用户消息保存
@@ -598,58 +592,51 @@ async def chat_completion_with_history(
             })
         
         if files:
-            # 检查模型是否支持文件处理能力
-            is_supported, error_message = await check_model_capabilities(f"{data.get('endpoint', '')}/{data.get('model')}", files)
-            logger.info(f"Model capabilities check result: is_supported={is_supported}, error_message={error_message}")
-            
-            if not is_supported:
-                warning_message = f"注意：{error_message}。我将只处理文本内容。"
-                messages.append({
-                    "role": "user",
-                    "content": data["text"]
-                })
-            else:
-                try:
-                    # 模型支持文件处理，尝试处理文件
-                    processed_files = await process_files(files)
-                    
-                    if not processed_files:  # 如果所有文件处理都失败了
-                        warning_message = "注意：所有文件处理失败，我将只处理文本内容。"
-                        messages.append({
-                            "role": "user",
-                            "content": data["text"]
-                        })
-                    else:
-                        messages.append({
-                            "role": "user",
-                            "content": [
-                                {"type": "text", "text": data["text"]},
-                                *[format_file_content(file) for file in processed_files]
-                            ]
-                        })
+            # 检查模型的文件处理能力
+            supported_files, unsupported_files, warning_message = model_capabilities_manager.check_file_capabilities(
+                f"{data.get('endpoint', '')}/{data.get('model')}", 
+                files
+            )
+            try:
+                # 处理支持的文件
+                if supported_files:
+                    processed_files = await process_files(supported_files)
+                    if processed_files:
+                        content_parts = [{"type": "text", "text": data["text"]}]
                         
-                        if len(processed_files) < len(files):  # 如果有部分文件处理失败
-                            warning_message = f"注意：{len(files) - len(processed_files)} 个文件处理失败，我将只处理成功的文件。"
-                            
-                except Exception as e:
-                    logger.error(f"Error processing files: {str(e)}")
-                    warning_message = "注意：文件处理过程中出错，我将只处理文本内容。"
+                        for file in processed_files:
+                            content_parts.append(format_file_content(file))
+                                
+                        messages.append({
+                            "role": "user",
+                            "content": content_parts
+                        })
+                
+                # 如果有不支持的文件，添加警告信息
+                if unsupported_files:
+                    file_types = [f.get("type", "unknown") for f in unsupported_files]
+                    warning_message = f"注意：模型不支持处理以下类型的文件: {', '.join(file_types)}"
+                    
+                # 如果所有文件都不支持，只处理文本
+                if not supported_files:
                     messages.append({
                         "role": "user",
                         "content": data["text"]
                     })
+                    
+            except Exception as e:
+                logger.error(f"Error processing files: {str(e)}")
+                warning_message = "注意：文件处理过程中出错，我将只处理文本内容。"
+                messages.append({
+                    "role": "user",
+                    "content": data["text"]
+                })
         else:
             messages.append({
                 "role": "user",
                 "content": data["text"]
             })
 
-        # 如果有警告消息，添加到用户输入前
-        # if warning_message:
-        #     messages.insert(0, {
-        #         "role": "system",
-        #         "content": warning_message
-        #     })
 
         # 在构建 formatted_data 之前
         logger.debug(f"Raw messages before formatting: {messages}")
@@ -879,15 +866,13 @@ async def update_conversation(
 def format_file_content(file: Dict) -> Dict:
     """格式化文件内容为消息格式"""
     file_type = get_file_content_type(file["type"])
-    # data:image/jpeg;base64,/9j/4AAQSkZJRg...  符合 RFC 2397 标准
-    base64_url = f"data:{file['mime_type']};base64,{file['base64']}"
     
-    # 基础内容
+    # 图片格式保持不变
     if file_type == "image":
         content = {
             "type": "image_url",
             "image_url": {
-                "url": base64_url
+                "url": f"data:{file['mime_type']};base64,{file['base64']}"
             }
         }
         # 添加可选的图片属性
@@ -895,17 +880,29 @@ def format_file_content(file: Dict) -> Dict:
             content["image_url"]["height"] = file["height"]
         if "width" in file:
             content["image_url"]["width"] = file["width"]
+            
+    # 音频格式需要修改
+    elif file_type == "audio":
+        content = {
+            "type": "audio",
+            "audio": file["base64"],  # 直接使用 base64 内容
+            "mime_type": file["mime_type"]
+        }
+        if "duration" in file:
+            content["duration"] = file["duration"]
+        if "bytes" in file:
+            content["size"] = file["bytes"]
+            
+    # 普通文件格式需要修改
     else:
         content = {
-            "type": "file_url",
-            "file_url": {
-                "url": base64_url,
-                "mime_type": file["mime_type"]
-            }
-        }        # 添加文件名等可选属性
+            "type": "file",
+            "content": file["base64"],
+            "mime_type": file["mime_type"]
+        }
         if "filename" in file:
-            content["file_url"]["name"] = file["filename"]
+            content["name"] = file["filename"]
         if "bytes" in file:
-            content["file_url"]["size"] = file["bytes"]
+            content["size"] = file["bytes"]
     
     return content

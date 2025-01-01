@@ -118,6 +118,7 @@ async def image(auth_result: CombinedAuthResult = Depends(combined_auth),
     """
     result = await upload_file_inner(auth_result, [file], "image")
     result[0]["temp_file_id"] = file_id
+    
     return result[0]
 
 
