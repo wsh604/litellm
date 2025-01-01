@@ -362,6 +362,7 @@ class StreamEventManager:
             "conversationId": self.user_message.conversation_id,
             "sender": "User",
             "text": self.user_message.text,
+            "files": self.user_message.files or [],
             "isCreatedByUser": True
         }
     
@@ -597,6 +598,8 @@ async def chat_completion_with_history(
                 f"{data.get('endpoint', '')}/{data.get('model')}", 
                 files
             )
+            # supported_files=files
+            # unsupported_files=[]
             try:
                 # 处理支持的文件
                 if supported_files:
@@ -736,7 +739,7 @@ async def chat_completion_with_history(
                 "parentMessageId": assistant_message.parent_message_id,
                 "model": assistant_message.model,
                 "endpoint": assistant_message.endpoint,
-                "endpointType": assistant_message.endpoint_type,  # 添加 endpoint_type
+                "endpointType": assistant_message.endpoint_type,
                 "isCreatedByUser": assistant_message.is_created_by_user
             }
             
@@ -746,21 +749,27 @@ async def chat_completion_with_history(
     except Exception as e:
         logger.error(f"Error occurred: {str(e)}")
         logger.error(f"Traceback: {traceback.format_exc()}")
+
         # 错误处理
         if conversation_history_manager and user_message:
+            error_message = '很抱歉,处理请求时出现错误。请稍后重试。'
             error_message = ErrorMessage(
-                text=str(e),
+                text=error_message,
                 user_id=wuban_user_id,
                 model=model,
                 conversation_id=user_message.conversation_id,
                 parent_message_id=user_message.message_id,
-                error=str(e)
+                error=error_message
             )
             logger.error(f"Created error message: {error_message}")
             asyncio.create_task(
                 conversation_history_manager.save_error_message(error_message,litellm_user_id=litellm_user_id)
             )
-        raise
+        return StreamingResponse(
+            handle_error_response(e,user_message,model),
+            media_type="text/event-stream"
+        )
+        
 
 # 创建 WubanUserService 实例
 user_service = WubanUserService()
@@ -906,3 +915,36 @@ def format_file_content(file: Dict) -> Dict:
             content["size"] = file["bytes"]
     
     return content
+
+async def handle_error_response(error: Exception,user_message: UserMessage,
+    model: str) -> AsyncGenerator[str, None]:
+    event_manager = StreamEventManager(
+        user_message,
+        model
+    )
+    yield event_manager.format_user_message_event(user_message.text)
+    
+    # 获取详细的错误信息
+    error_msg = str(error)
+    
+    # 如果是 litellm 的错误,尝试获取更详细信息
+    if hasattr(error, 'message'):
+        error_msg = error.message
+    
+    # 模仿流式输出错误信息
+    error_content = f"很抱歉,处理请求时出现错误: {error_msg}"
+    event_manager.full_response = error_content
+    # 如果错误信息太长,只保留前20个字符
+    if len(error_content) > 30:
+        event_manager.full_response = error_content[:30] + "..."
+    else:
+        event_manager.full_response = error_content
+    # 模拟流式输出错误信息
+    partial_response = ""
+    for char in event_manager.full_response:
+        partial_response += char
+        if formatted_event := event_manager._create_message_event(partial_response):
+            yield formatted_event
+    
+    # 发送最终事件
+    yield event_manager.format_final_event()

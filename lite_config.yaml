@@ -33,10 +33,44 @@ model_list:
       supports_audio: false
       supports_file: true
       capabilities: ["text", "chat", "code-completion", "code-generation"]
+  - model_name: gemini-pro-vision/gemini/gemini-pro-vision
+    litellm_params:
+      model: gemini/gemini-pro-vision
+      api_key: os.environ/GOOGLE_API_KEY
+    model_info:
+      supports_vision: true
+      supports_audio: true
+      supports_file: true
+      capabilities: ["text", "chat", "vision", "audio", "file", "stream"]
+  - model_name: openrouter-vision/openai/anthropic/claude-3-opus-20240229
+    litellm_params:
+      model: openai/anthropic/claude-3-opus-20240229
+      api_base: "https://openrouter.ai/api/v1"
+      api_key: os.environ/OPENROUTER_API_KEY
+      max_tokens: 100
+      temperature: 0.7
+      stream: true
+      headers: {
+        "HTTP-Referer": "https://litellm.ai",
+        "X-Title": "LiteLLM Server"
+      }
+    model_info:
+      supports_vision: true
+      supports_file: true
+      capabilities: ["text", "chat", "vision", "file", "stream"]
+  - model_name: glm-4v-vision/openai/glm-4v
+    litellm_params:
+      model: openai/glm-4v
+      api_key: os.environ/ZHIPU_API_KEY
+      api_base: "https://open.bigmodel.cn/api/paas/v4"
+    model_info:
+      supports_vision: true
+      supports_file: true
+      capabilities: ["text", "chat", "vision", "file", "stream"]
 
 litellm_settings:
   drop_params: True
-  num_retries: 5
+  num_retries: 2
   request_timeout: 30
   telemetry: False
   default_headers:
