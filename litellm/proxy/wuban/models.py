@@ -9,7 +9,6 @@ from fastapi.params import File, Form
 from starlette.responses import FileResponse
 
 from .WLog import log
-from ..utils import PrismaClient
 from .wuban_auth_service import combined_auth, CombinedAuthResult
 
 TAG = "librechat"
@@ -20,9 +19,13 @@ router.file_upload_prisma_client = None
 
 inner_models = ("azureOpenAI", "openAI", "bingAI", "chatGPTBrowser", "google", "gptPlugins", "anthropic", "assistants", "azureAssistants", "agents", "bedrock")
 
+async def set_content_type(response: Response):
+    response.headers["Content-Type"] = "application/json;charset=utf-8"
+
+
 @router.get(
     "/api/models",
-    dependencies=[Depends(combined_auth)],
+    dependencies=[Depends(combined_auth), Depends(set_content_type)],
     tags=[TAG]
 )
 async def models(auth_result: CombinedAuthResult = Depends(combined_auth)):
@@ -57,7 +60,7 @@ async def models(auth_result: CombinedAuthResult = Depends(combined_auth)):
 
 @router.get(
     "/api/endpoints",
-    dependencies=[Depends(combined_auth)],
+    dependencies=[Depends(combined_auth), Depends(set_content_type)],
     tags=[TAG]
 )
 async def endpoints(auth_result: CombinedAuthResult = Depends(combined_auth)):
@@ -81,7 +84,7 @@ def isInnerModel(name):
 
 @router.get(
     "/api/keys",
-    dependencies=[Depends(combined_auth)],
+    dependencies=[Depends(combined_auth), Depends(set_content_type)],
     tags=[TAG]
 )
 async def keys(name):
@@ -107,7 +110,7 @@ async def upload_file(file_path: str):
 
 @router.post(
     "/api/files/images",
-    dependencies=[Depends(combined_auth)],
+    dependencies=[Depends(combined_auth), Depends(set_content_type)],
     tags=[TAG]
 )
 async def image(auth_result: CombinedAuthResult = Depends(combined_auth),
@@ -123,7 +126,7 @@ async def image(auth_result: CombinedAuthResult = Depends(combined_auth),
 
 @router.post(
     "/api/files",
-    dependencies=[Depends(combined_auth)],
+    dependencies=[Depends(combined_auth), Depends(set_content_type)],
     tags=[TAG]
 )
 async def upload_file(auth_result: CombinedAuthResult = Depends(combined_auth),
@@ -215,7 +218,7 @@ def ensure_today_dir():
 
 @router.get(
     "/api/files",
-    dependencies=[Depends(combined_auth)],
+    dependencies=[Depends(combined_auth), Depends(set_content_type)],
     tags=["files"]
 )
 async def get_files(auth_result: CombinedAuthResult = Depends(combined_auth),
@@ -225,7 +228,7 @@ async def get_files(auth_result: CombinedAuthResult = Depends(combined_auth),
 
 @router.get(
     "/api/files/images",
-    dependencies=[Depends(combined_auth)],
+    dependencies=[Depends(combined_auth), Depends(set_content_type)],
     tags=["files/images"]
 )
 async def get_db_files(auth_result: CombinedAuthResult = Depends(combined_auth),
