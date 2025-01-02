@@ -2,6 +2,7 @@ from datetime import datetime
 from fastapi import APIRouter, Depends, Request, Response, HTTPException
 from pydantic.main import BaseModel
 from litellm import router
+from litellm.exceptions import APIConnectionError
 from litellm.proxy.auth.user_api_key_auth import user_api_key_auth
 from litellm.proxy.wuban.conversation_history_manager import (
     ConversationHistoryManager, 
@@ -604,16 +605,15 @@ async def chat_completion_with_history(
                 # 处理支持的文件
                 if supported_files:
                     processed_files = await process_files(supported_files)
+                    content_parts = [{"type": "text", "text": data["text"]}]
                     if processed_files:
-                        content_parts = [{"type": "text", "text": data["text"]}]
-                        
                         for file in processed_files:
                             content_parts.append(format_file_content(file))
                                 
-                        messages.append({
-                            "role": "user",
-                            "content": content_parts
-                        })
+                    messages.append({
+                        "role": "user",
+                        "content": content_parts
+                    })
                 
                 # 如果有不支持的文件，添加警告信息
                 if unsupported_files:
@@ -747,26 +747,12 @@ async def chat_completion_with_history(
             return libre_response
             
     except Exception as e:
-        logger.error(f"Error occurred: {str(e)}")
+        error_str = str(e)[:200] if len(str(e)) > 200 else str(e)
+        logger.error(f"Error occurred: {error_str}")
         logger.error(f"Traceback: {traceback.format_exc()}")
 
-        # 错误处理
-        if conversation_history_manager and user_message:
-            error_message = '很抱歉,处理请求时出现错误。请稍后重试。'
-            error_message = ErrorMessage(
-                text=error_message,
-                user_id=wuban_user_id,
-                model=model,
-                conversation_id=user_message.conversation_id,
-                parent_message_id=user_message.message_id,
-                error=error_message
-            )
-            logger.error(f"Created error message: {error_message}")
-            asyncio.create_task(
-                conversation_history_manager.save_error_message(error_message,litellm_user_id=litellm_user_id)
-            )
         return StreamingResponse(
-            handle_error_response(e,user_message,model),
+            handle_error_response(e,user_message,model,wuban_user_id,litellm_user_id,conversation_history_manager),
             media_type="text/event-stream"
         )
         
@@ -917,34 +903,50 @@ def format_file_content(file: Dict) -> Dict:
     return content
 
 async def handle_error_response(error: Exception,user_message: UserMessage,
-    model: str) -> AsyncGenerator[str, None]:
+    model: str,wuban_user_id: str,litellm_user_id: str,conversation_history_manager: ConversationHistoryManager) -> AsyncGenerator[str, None]:
     event_manager = StreamEventManager(
         user_message,
         model
     )
-    yield event_manager.format_user_message_event(user_message.text)
-    
-    # 获取详细的错误信息
-    error_msg = str(error)
-    
-    # 如果是 litellm 的错误,尝试获取更详细信息
-    if hasattr(error, 'message'):
-        error_msg = error.message
-    
-    # 模仿流式输出错误信息
-    error_content = f"很抱歉,处理请求时出现错误: {error_msg}"
-    event_manager.full_response = error_content
-    # 如果错误信息太长,只保留前20个字符
-    if len(error_content) > 30:
-        event_manager.full_response = error_content[:30] + "..."
-    else:
-        event_manager.full_response = error_content
-    # 模拟流式输出错误信息
-    partial_response = ""
-    for char in event_manager.full_response:
-        partial_response += char
-        if formatted_event := event_manager._create_message_event(partial_response):
-            yield formatted_event
-    
-    # 发送最终事件
-    yield event_manager.format_final_event()
+    try:
+        yield event_manager.format_user_message_event(user_message.text)
+        
+        # 获取错误信息
+        error_msg = error.message if hasattr(error, 'message') else str(error)
+        
+        # 如果错误信息太长则截断
+        if len(error_msg) > 100:
+            error_msg = error_msg[:100] + "..."
+        
+        # 需要对 APIConnectionError 做特殊处理
+        if "Invalid user message" in error_msg:
+            # 文件格式不支持的情况
+            error_msg = " 包含了模型不支持处理的文件格式。请尝试发送图片、文本。"
+        event_manager.full_response = f"抱歉,当前的请求发生了错误: {error_msg}"
+        # 模拟流式输出错误信息
+        partial_response = ""
+        for char in event_manager.full_response:
+            partial_response += char
+            if formatted_event := event_manager._create_message_event(partial_response):
+                yield formatted_event
+        
+        # 发送最终事件
+        yield event_manager.format_final_event()
+        # 错误消息保存
+        if conversation_history_manager and user_message:
+                error_message = ErrorMessage(
+                    text=error_msg,
+                    user_id=wuban_user_id,
+                    model=model,
+                    conversation_id=user_message.conversation_id,
+                    parent_message_id=user_message.message_id,
+                    error=error_msg
+                )
+                asyncio.create_task(
+                    conversation_history_manager.save_error_message(error_message,litellm_user_id=litellm_user_id)
+                )
+    except Exception as e:
+        logger.error(f"Error in handle_error_response: {str(e)}")
+        logger.error(f"Traceback: {traceback.format_exc()}")
+        basic_error = "抱歉,系统处理出现异常,请稍后重试。"
+        yield f"event: message\ndata: {json.dumps({'message': basic_error, 'error': True})}\n\n"

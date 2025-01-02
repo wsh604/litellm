@@ -70,6 +70,9 @@ docker run -d \
         -e LITELLM_MASTER_KEY="$LITELLM_MASTER_KEY" \
         -e LITELLM_SALT_KEY="$LITELLM_SALT_KEY" \
         -e LITELLM_API_KEY="$LITELLM_API_KEY" \
+        -e GOOGLE_API_KEY="$GOOGLE_API_KEY" \
+        -e ZHIPU_API_KEY="$ZHIPU_API_KEY" \
+        -e OPENROUTER_API_KEY="$OPENROUTER_API_KEY" \
         --restart always \
         $FULL_IMAGE_NAME \
         --config /app/lite_config.yaml
