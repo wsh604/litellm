@@ -607,7 +607,15 @@ async def user_update(
         )
 
         existing_metadata = existing_user_row.metadata if existing_user_row else {}
-
+        verbose_proxy_logger.debug(f"existing_metadata type: {type(existing_metadata)}")
+        verbose_proxy_logger.debug(f"existing_metadata value: {existing_metadata}")
+        # Convert existing_metadata from string to dict if needed
+        if isinstance(existing_metadata, str):
+            try:
+                existing_metadata = json.loads(existing_metadata)
+            except json.JSONDecodeError:
+                # If string is not valid JSON, initialize empty dict
+                existing_metadata = {}
         non_default_values = prepare_metadata_fields(
             data=data,
             non_default_values=non_default_values,

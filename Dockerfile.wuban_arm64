@@ -36,8 +36,11 @@ COPY --from=builder-cache /install /usr/local
 # 复制源代码
 COPY . .
 
-# 构建 Admin UI（只构建一次）
-RUN chmod +x docker/build_admin_ui.sh && ./docker/build_admin_ui.sh
+# ARG CACHE_BUST
+RUN echo "Cache bust: ${CACHE_BUST}"
+# 构建 Admin UI（只构建一次）&& \ date > /app/litellm/proxy/_experimental/out/build_time.txt
+RUN chmod +x docker/build_admin_ui.sh && ./docker/build_admin_ui.sh 
+   
 
 # 构建包
 RUN rm -rf dist/* && python -m build
@@ -55,9 +58,12 @@ ENV NPM_CONFIG_REGISTRY=https://registry.npmmirror.com
 ENV PYTHONUNBUFFERED=1
 ENV DEBIAN_FRONTEND=noninteractive
 
+# ARG CACHE_BUST
+
 # 复制必要文件
 COPY --from=builder /app/dist/*.whl /app/
-COPY --from=builder /app/litellm/proxy/_experimental/out /app/ui/dist
+# COPY --from=builder /app/litellm/proxy/_experimental/out /app/ui/dist
+COPY --from=builder /app/litellm/proxy/_experimental/out /app/litellm/proxy/_experimental/out
 COPY --from=builder /usr/local /usr/local
 COPY schema.prisma /app/
 

@@ -1538,14 +1538,14 @@ class PrismaClient:
                     t.max_budget AS team_max_budget, 
                     t.tpm_limit AS team_tpm_limit,
                     t.rpm_limit AS team_rpm_limit,
-                    t.models AS team_models,
-                    t.metadata AS team_metadata,
+                    t.models_text AS team_models,
+                    t.metadata_text AS team_metadata,
                     t.blocked AS team_blocked,
                     t.team_alias AS team_alias,
-                    t.metadata AS team_metadata,
-                    t.members_with_roles AS team_members_with_roles,
+                    t.metadata_text AS team_metadata,
+                    t.members_with_roles_text AS team_members_with_roles,
                     tm.spend AS team_member_spend,
-                    m.aliases as team_model_aliases
+                    m.model_aliases_text as team_model_aliases
                     FROM "LiteLLM_VerificationToken" AS v
                     LEFT JOIN "LiteLLM_TeamTable" AS t ON v.team_id = t.team_id
                     LEFT JOIN "LiteLLM_TeamMembership" AS tm ON v.team_id = tm.team_id AND tm.user_id = v.user_id

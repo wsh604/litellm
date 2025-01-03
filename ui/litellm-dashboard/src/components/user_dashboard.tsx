@@ -181,7 +181,7 @@ const UserDashboard: React.FC<UserDashboardProps> = ({
               accessToken,
               userID,
               userRole,
-              false,
+              true,
               null,
               null
             );

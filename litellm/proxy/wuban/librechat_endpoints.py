@@ -280,8 +280,8 @@ class StreamEventManager:
         """创建消息事件"""
         event_data = {
             "message": True,
-            "messageId": self.user_message.message_id,
-            "parentMessageId": self.user_message.parent_message_id,
+            "messageId": self.assistant_message_id,
+            "parentMessageId": self.user_message.message_id,
             "text": content,
             "initial": False
         }
@@ -396,7 +396,8 @@ async def stream_and_save(
     """处理流式响应并保存消息"""
     
     event_manager = StreamEventManager(user_message, model)
-    
+    response_message_id = str(uuid.uuid4())
+
     yield event_manager.format_user_message_event(user_message.text)
     try:
         async for chunk in response.body_iterator:
@@ -433,7 +434,13 @@ async def download_and_encode_file(file_info: Dict) -> str:
     """下载文件并转换为 base64 编码"""
     try:
         filepath = file_info["filepath"]
-        
+        # 
+        # 如果路径以 /api/cdn/ 开头，获取真实文件路径
+        if filepath.startswith('/api/cdn/'):
+            file_path = filepath.replace('/api/cdn/', '', 1)  # 移除前缀
+            file_base_dir = os.getenv("FILE_UPLOAD_BASE_DIR")
+            filepath = os.path.join(file_base_dir, file_path)
+
         # 如果是本地文件路径，直接读取
         if os.path.exists(filepath):
             with open(filepath, "rb") as f:

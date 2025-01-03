@@ -84,3 +84,4 @@ local_debug/
 local_debug
 
 deploy.env
+upload/

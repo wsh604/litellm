@@ -446,11 +446,12 @@ class ConversationHistoryManager:
                 
                 # 处理文件信息
                 if msg.files:
+                    
                     message_dict["files"] = [
                         {
                             "bytes": file.file.size,  # 从 file 表获取
                             "filename": file.file.name,
-                            "filepath": file.file.url,
+                            "filepath": f"/chat/api/cdn/{file.file.url}",
                             "object": "file",  # 固定值
                             "source": "local",  # 固定值
                             "type": file.file.type,

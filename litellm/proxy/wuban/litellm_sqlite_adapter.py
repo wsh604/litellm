@@ -289,5 +289,34 @@ def extend_prisma_client(client: Prisma) -> Prisma:
                     logger.error(f"Failed to add safe_create_many to {attr_name}: {str(e)}")
                     continue
 
+    # 添加 SQLite 特定的行数查询
+    async def _get_spend_logs_row_count_sqlite(*args, **kwargs) -> int:
+        """SQLite 兼容的获取表行数方法"""
+        try:
+            query = """
+            SELECT COUNT(*) as count 
+            FROM "LiteLLM_SpendLogs"
+            """
+            result = await client.query_raw(query)
+            return result[0]["count"] if result else 0
+        except Exception as e:
+            logger.error(f"Error getting LiteLLM_SpendLogs row count: {e}")
+            return 0
+    # 直接使用 SQLite 的行数查询
+    async def _get_spend_logs_row_count_sqlite(*args, **kwargs) -> int:
+        """SQLite 兼容的获取表行数方法"""
+        try:
+            query = """
+            SELECT COUNT(*) as count 
+            FROM "LiteLLM_SpendLogs"
+            """
+            result = await client.query_raw(query)
+            return result[0]["count"] if result else 0
+        except Exception as e:
+            logger.error(f"Error getting LiteLLM_SpendLogs row count: {e}")
+            return 0
+    # 替换原始方法
+    setattr(client, '_get_spend_logs_row_count', _get_spend_logs_row_count_sqlite)
+
     logger.info("Prisma client extension completed")
     return client

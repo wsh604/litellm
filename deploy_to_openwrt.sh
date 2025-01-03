@@ -20,9 +20,9 @@ FULL_IMAGE_NAME="$REGISTRY/xmren/litellm-arm64:$VERSION"
 echo "Starting deployment process..."
 echo "Using version: $VERSION"
 
-# 构建和推送镜像
+# 构建和推送镜像 --build-arg CACHE_BUST=$(date +%s)
 echo "Building Docker image..."
-docker buildx build --platform linux/arm64 --load -t litellm-microcache -f Dockerfile.wuban_arm64 .
+docker buildx build  --platform linux/arm64 --load -t litellm-microcache -f Dockerfile.wuban_arm64 .
 
 echo "Logging into Aliyun Container Registry..."
 echo "$ALIYUN_PASSWORD" | docker login --username=$ALIYUN_USERNAME $REGISTRY --password-stdin

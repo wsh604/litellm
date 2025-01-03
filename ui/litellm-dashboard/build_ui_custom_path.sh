@@ -31,7 +31,6 @@ fi
 
 # Run npm build with the environment variable
 UI_BASE_PATH=$UI_BASE_PATH npm run build
-
 # Check if the build was successful
 if [ $? -eq 0 ]; then
     echo "Build successful. Copying files..."
