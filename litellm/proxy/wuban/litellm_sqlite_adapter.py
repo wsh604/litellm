@@ -1,11 +1,17 @@
+import subprocess
 from prisma import Prisma
 import json
 from typing import List, Dict, Any, Optional
 from prisma.errors import RawQueryError
 from functools import partial
-from .logger_util import WubanLogger
 
-logger = WubanLogger.get_logger()
+# from .logger_util import WubanLogger
+# logger = WubanLogger.get_logger()
+import logging
+
+from litellm.proxy.utils import PrismaClient, ProxyLogging
+# 替换 logger_util 导入
+logger = logging.getLogger(__name__)
 
 class SafeUpsertWrapper:
     """用于安全处理数据库 upsert 操作的包装器类
@@ -133,6 +139,19 @@ class SafeUpsertWrapper:
             logger.error(f"Upsert operation failed: {str(e)}")
             raise
 
+def _process_json_fields(data, fields):
+    """处理单个对象的 JSON 字段"""
+    if not data:
+        return data
+        
+    result = dict(data)
+    for field in fields:
+        if field in result and isinstance(result[field], str):
+            try:
+                result[field] = json.loads(result[field])
+            except:
+                pass
+    return result
 def extend_prisma_client(client: Prisma) -> Prisma:
     """扩展 Prisma 客户端，添加 SQLite 特定的功能支持
     
@@ -172,23 +191,162 @@ def extend_prisma_client(client: Prisma) -> Prisma:
     client._json_deserializer = json.loads
     logger.debug("JSON serializers registered")
 
-    # 需要包装的表列表 适配litellm原有的一些数据库操作不支持sqlite
-    tables_to_wrap = [
-        'litellm_config',
-        'litellm_spendlogs',
-        'litellm_usertable',
-        'litellm_verificationtoken'
+    # 定义需要 JSON 处理的字段映射
+    JSON_FIELDS = {
+         'litellm_budgettable': [
+        'model_max_budget'
+    ],
+    'litellm_proxymodeltable': [
+        'litellm_params',
+        'model_info'
+    ],
+    'litellm_organizationtable': [
+        'metadata',
+        'models',          # String[]
+        'model_spend'
+    ],
+    'litellm_modeltable': [
+        'model_aliases'
+    ],
+    'litellm_teamtable': [
+        'admins',         # String[]
+        'members',        # String[]
+        'members_with_roles',
+        'metadata',
+        'models',         # String[]
+        'model_spend',
+        'model_max_budget'
+    ],
+    'litellm_usertable': [
+        'teams',          # String[]
+        'models',         # String[]
+        'metadata',
+        'allowed_cache_controls',  # String[]
+        'model_spend',
+        'model_max_budget'
+    ],
+    'litellm_verificationtoken': [
+        'models',         # String[]
+        'aliases',
+        'config',
+        'permissions',
+        'metadata',
+        'allowed_cache_controls',  # String[]
+        'model_spend',
+        'model_max_budget'
+    ],
+    'litellm_config': [
+        'param_value'
+    ],
+    'litellm_spendlogs': [
+        'metadata',
+        'request_tags'
+    ],
+    'litellm_errorlogs': [
+        'request_kwargs'
+    ],
+    'litellm_usernotifications': [
+        'models'          # String[]
+    ],
+    'litellm_auditlog': [
+        'before_value',
+        'updated_values'
     ]
+    }
 
-    # 循环包装所有需要的表
-    for table_name in tables_to_wrap:
-        try:
+    # 创建模型包装类
+    class ModelWrapper:
+        def __init__(self, model, json_fields=None):
+            self._model = model
+            self._json_fields = json_fields or []
+        
+        def _serialize_data(self, data):
+            """序列化 JSON 字段"""
+            if not data or not self._json_fields:
+                return data
+            result = data.copy()
+            for field in self._json_fields:
+                if field in result and isinstance(result[field], (list, dict)):
+                    result[field] = json.dumps(result[field])
+            return result
+        
+        def _deserialize_data(self, data):
+            """反序列化 JSON 字段"""
+            if not data or not self._json_fields:
+                return data
+            # 保持原始对象，只更新 JSON 字段
+            if not isinstance(data, dict):
+                for field in self._json_fields:
+                    if hasattr(data, field) and isinstance(getattr(data, field), str):
+                        try:
+                            setattr(data, field, json.loads(getattr(data, field)))
+                        except:
+                            pass
+                return data
+            # 如果是字典，按原来的方式处理
+            result = dict(data)
+            for field in self._json_fields:
+                if field in result and isinstance(result[field], str):
+                    try:
+                        result[field] = json.loads(result[field])
+                    except:
+                        pass
+            return result
+        
+        async def create(self, data, **kwargs):
+            processed_data = self._serialize_data(data)
+            result = await self._model.create(data=processed_data, **kwargs)
+            return self._deserialize_data(result)
+        
+        async def find_first(self, **kwargs):
+            result = await self._model.find_first(**kwargs)
+            return self._deserialize_data(result) if result else None
+            
+        async def find_many(self, **kwargs):
+            results = await self._model.find_many(**kwargs)
+            return [self._deserialize_data(item) for item in results]
+            
+        async def update(self, where, data, **kwargs):
+            processed_data = self._serialize_data(data)
+            result = await self._model.update(where=where, data=processed_data, **kwargs)
+            return self._deserialize_data(result)
+        async def upsert(self, where, data, **kwargs):
+            if 'create' in data:
+                data['create'] = self._serialize_data(data['create'])
+            if 'update' in data:
+                data['update'] = self._serialize_data(data['update'])
+                
+            result = await self._model.upsert(where=where, data=data, **kwargs)
+            return self._deserialize_data(result)
+            
+        def __getattr__(self, name):
+            return getattr(self._model, name)
+
+    # 为需要 JSON 处理的表创建包装器
+    for table_name, fields in JSON_FIELDS.items():
+        if hasattr(client.db, table_name):
             original_model = getattr(client.db, table_name)
-            logger.debug(f"Preloaded {table_name} table")
-            setattr(client.db, table_name, SafeUpsertWrapper(original_model))
-            logger.debug(f"Wrapped {table_name} table")
-        except Exception as e:
-            logger.warning(f"Failed to wrap table {table_name}: {str(e)}")
+            wrapped_model = ModelWrapper(original_model, fields)
+            setattr(client.db, f"_{table_name}_original", original_model)
+            setattr(client.db, table_name, wrapped_model)
+
+    # 需要包装的表列表 适配litellm原有的一些数据库操作不支持sqlite
+    # tables_to_wrap = [
+    #     'litellm_config',
+    #     'litellm_spendlogs',
+    #     'litellm_usertable',
+    #     'litellm_verificationtoken'
+    # ]
+
+    # # 循环包装所有需要的表
+    # for table_name in tables_to_wrap:
+    #     try:
+    #         original_model = getattr(client.db, table_name)
+    #         logger.debug(f"Preloaded {table_name} table")
+    #         setattr(client.db, table_name, SafeUpsertWrapper(original_model))
+    #         logger.debug(f"Wrapped {table_name} table")
+    #     except Exception as e:
+    #         logger.warning(f"Failed to wrap table {table_name}: {str(e)}")
 
     # SQLite 视图检查
     async def check_view_exists_sqlite(view_name: Optional[str] = None) -> bool:
@@ -234,7 +392,7 @@ def extend_prisma_client(client: Prisma) -> Prisma:
                 return await check_view_exists_sqlite(view_name)
             raise e
 
-    client.check_view_exists = wrapped_check_view_exists
+    # client.check_view_exists = wrapped_check_view_exists
 
     # 通用的 create_many 包装函数
     def create_safe_create_many(model):
@@ -289,19 +447,6 @@ def extend_prisma_client(client: Prisma) -> Prisma:
                     logger.error(f"Failed to add safe_create_many to {attr_name}: {str(e)}")
                     continue
 
-    # 添加 SQLite 特定的行数查询
-    async def _get_spend_logs_row_count_sqlite(*args, **kwargs) -> int:
-        """SQLite 兼容的获取表行数方法"""
-        try:
-            query = """
-            SELECT COUNT(*) as count 
-            FROM "LiteLLM_SpendLogs"
-            """
-            result = await client.query_raw(query)
-            return result[0]["count"] if result else 0
-        except Exception as e:
-            logger.error(f"Error getting LiteLLM_SpendLogs row count: {e}")
-            return 0
     # 直接使用 SQLite 的行数查询
     async def _get_spend_logs_row_count_sqlite(*args, **kwargs) -> int:
         """SQLite 兼容的获取表行数方法"""
@@ -310,7 +455,7 @@ def extend_prisma_client(client: Prisma) -> Prisma:
             SELECT COUNT(*) as count 
             FROM "LiteLLM_SpendLogs"
             """
-            result = await client.query_raw(query)
+            result = await client.db.query_raw(query)
             return result[0]["count"] if result else 0
         except Exception as e:
             logger.error(f"Error getting LiteLLM_SpendLogs row count: {e}")

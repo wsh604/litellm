@@ -17,6 +17,10 @@ from litellm.proxy.utils import handle_exception_on_proxy
 
 router = APIRouter()
 
+# 在文件开头添加数据库类型检查函数
+def is_sqlite_db(prisma_client):
+    return (hasattr(prisma_client.db, '_original_prisma') 
+            and prisma_client.db._original_prisma._active_provider == 'sqlite')
 
 @router.get(
     "/spend/keys",
@@ -280,15 +284,26 @@ async def get_global_activity(
             )
         else:
 
-            sql_query = """
-            SELECT
-                date_trunc('day', "startTime") AS date,
-                COUNT(*) AS api_requests,
-                SUM(total_tokens) AS total_tokens
-            FROM "LiteLLM_SpendLogs"
-            WHERE "startTime" BETWEEN $1::date AND $2::date + interval '1 day'
-            GROUP BY date_trunc('day', "startTime")
-            """
+            if is_sqlite_db(prisma_client):
+                sql_query = """
+                SELECT
+                    date(startTime) AS date,
+                    COUNT(*) AS api_requests,
+                    SUM(total_tokens) AS total_tokens
+                FROM "LiteLLM_SpendLogs"
+                WHERE date(startTime) BETWEEN date(?) AND date(date(?), '+1 day')
+                GROUP BY date(startTime)
+                """
+            else:
+                sql_query = """
+                SELECT
+                    date_trunc('day', "startTime") AS date,
+                    COUNT(*) AS api_requests,
+                    SUM(total_tokens) AS total_tokens
+                FROM "LiteLLM_SpendLogs"
+                WHERE "startTime" BETWEEN $1::date AND $2::date + interval '1 day'
+                GROUP BY date_trunc('day', "startTime")
+                """
             db_response = await prisma_client.db.query_raw(
                 sql_query, start_date_obj, end_date_obj
             )
@@ -448,16 +463,28 @@ async def get_global_activity_model(
             )
         else:
 
-            sql_query = """
-            SELECT
-                model_group,
-                date_trunc('day', "startTime") AS date,
-                COUNT(*) AS api_requests,
-                SUM(total_tokens) AS total_tokens
-            FROM "LiteLLM_SpendLogs"
-            WHERE "startTime" BETWEEN $1::date AND $2::date + interval '1 day'
-            GROUP BY model_group, date_trunc('day', "startTime")
-            """
+            if is_sqlite_db(prisma_client):
+                sql_query = """
+                SELECT
+                    model_group,
+                    date(startTime) AS date,
+                    COUNT(*) AS api_requests,
+                    SUM(total_tokens) AS total_tokens
+                FROM "LiteLLM_SpendLogs"
+                WHERE date(startTime) BETWEEN date(?) AND date(date(?), '+1 day')
+                GROUP BY model_group, date(startTime)
+                """
+            else:
+                sql_query = """
+                SELECT
+                    model_group,
+                    date_trunc('day', "startTime") AS date,
+                    COUNT(*) AS api_requests,
+                    SUM(total_tokens) AS total_tokens
+                FROM "LiteLLM_SpendLogs"
+                WHERE "startTime" BETWEEN $1::date AND $2::date + interval '1 day'
+                GROUP BY model_group, date_trunc('day', "startTime")
+                """
             db_response = await prisma_client.db.query_raw(
                 sql_query, start_date_obj, end_date_obj
             )
@@ -593,24 +620,48 @@ async def get_global_activity_exceptions_per_deployment(
                 "Database not connected. Connect a database to your proxy - https://docs.litellm.ai/docs/simple_proxy#managing-auth---virtual-keys"
             )
 
-        sql_query = """
-        SELECT
-            api_base,
-            date_trunc('day', "startTime")::date AS date,
-            COUNT(*) AS num_rate_limit_exceptions
-        FROM
-            "LiteLLM_ErrorLogs"
-        WHERE
-            "startTime" >= $1::date
-            AND "startTime" < ($2::date + INTERVAL '1 day')
-            AND model_group = $3
-            AND status_code = '429'
-        GROUP BY
-            api_base,
-            date_trunc('day', "startTime")
-        ORDER BY
-            date;
-        """
+        # Check if using SQLite
+        is_sqlite = (hasattr(prisma_client.db, '_original_prisma') 
+                    and prisma_client.db._original_prisma._active_provider == 'sqlite')
+
+        if is_sqlite:
+            sql_query = """
+            SELECT
+                api_base,
+                date(startTime) as date,
+                COUNT(*) AS num_rate_limit_exceptions
+            FROM
+                "LiteLLM_ErrorLogs"
+            WHERE
+                datetime(startTime) >= datetime(?)
+                AND datetime(startTime) < datetime(?, '+1 day')
+                AND model_group = ?
+                AND status_code = '429'
+            GROUP BY
+                api_base,
+                date(startTime)
+            ORDER BY
+                date;
+            """
+        else:
+            sql_query = """
+            SELECT
+                api_base,
+                date_trunc('day', "startTime")::date AS date,
+                COUNT(*) AS num_rate_limit_exceptions
+            FROM
+                "LiteLLM_ErrorLogs"
+            WHERE
+                "startTime" >= $1::date
+                AND "startTime" < ($2::date + INTERVAL '1 day')
+                AND model_group = $3
+                AND status_code = '429'
+            GROUP BY
+                api_base,
+                date_trunc('day', "startTime")
+            ORDER BY
+                date;
+            """
         db_response = await prisma_client.db.query_raw(
             sql_query, start_date_obj, end_date_obj, model_group
         )
@@ -727,22 +778,41 @@ async def get_global_activity_exceptions(
                 "Database not connected. Connect a database to your proxy - https://docs.litellm.ai/docs/simple_proxy#managing-auth---virtual-keys"
             )
 
-        sql_query = """
-        SELECT
-            date_trunc('day', "startTime")::date AS date,
-            COUNT(*) AS num_rate_limit_exceptions
-        FROM
-            "LiteLLM_ErrorLogs"
-        WHERE
-            "startTime" >= $1::date
-            AND "startTime" < ($2::date + INTERVAL '1 day')
-            AND model_group = $3
-            AND status_code = '429'
-        GROUP BY
-            date_trunc('day', "startTime")
-        ORDER BY
-            date;
-        """
+        # Check if using SQLite
+        is_sqlite = (hasattr(prisma_client.db, '_original_prisma') 
+                    and prisma_client.db._original_prisma._active_provider == 'sqlite')
+
+        if is_sqlite:
+            sql_query = """
+            SELECT 
+                date(startTime) as date,
+                COUNT(*) AS num_rate_limit_exceptions
+            FROM "LiteLLM_ErrorLogs"
+            WHERE 
+                datetime(startTime) >= datetime(?)
+                AND datetime(startTime) < datetime(?, '+1 day')
+                AND model_group = ?
+                AND status_code = '429'
+            GROUP BY date(startTime)
+            ORDER BY date;
+            """
+        else:
+            sql_query = """
+            SELECT
+                date_trunc('day', "startTime")::date AS date,
+                COUNT(*) AS num_rate_limit_exceptions
+            FROM
+                "LiteLLM_ErrorLogs"
+            WHERE
+                "startTime" >= $1::date
+                AND "startTime" < ($2::date + INTERVAL '1 day')
+                AND model_group = $3
+                AND status_code = '429'
+            GROUP BY
+                date_trunc('day', "startTime")
+            ORDER BY
+                date;
+            """
         db_response = await prisma_client.db.query_raw(
             sql_query, start_date_obj, end_date_obj, model_group
         )
@@ -908,14 +978,7 @@ async def get_global_spend_provider(
         )
 
 
-@router.get(
-    "/global/spend/report",
-    tags=["Budget & Spend Tracking"],
-    dependencies=[Depends(user_api_key_auth)],
-    responses={
-        200: {"model": List[LiteLLM_SpendLogs]},
-    },
-)
+@router.get("/global/spend/report")
 async def get_global_spend_report(
     start_date: Optional[str] = fastapi.Query(
         default=None,
@@ -1001,48 +1064,80 @@ async def get_global_spend_report(
             verbose_proxy_logger.debug("Getting /spend for api_key: %s", api_key)
             if api_key.startswith("sk-"):
                 api_key = hash_token(token=api_key)
-            sql_query = """
-                WITH SpendByModelApiKey AS (
+            if is_sqlite_db(prisma_client):
+                sql_query = """
+                    WITH SpendByModelApiKey AS (
+                        SELECT
+                            sl.api_key,
+                            sl.model,
+                            SUM(sl.spend) AS model_cost,
+                            SUM(sl.prompt_tokens) AS model_input_tokens,
+                            SUM(sl.completion_tokens) AS model_output_tokens
+                        FROM
+                            "LiteLLM_SpendLogs" sl
+                        WHERE
+                            sl.startTime BETWEEN ? AND ?
+                        GROUP BY
+                            sl.api_key,
+                            sl.model
+                    )
                     SELECT
-                        sl.api_key,
-                        sl.model,
-                        SUM(sl.spend) AS model_cost,
-                        SUM(sl.prompt_tokens) AS model_input_tokens,
-                        SUM(sl.completion_tokens) AS model_output_tokens
+                        api_key,
+                        SUM(model_cost) AS total_cost,
+                        SUM(model_input_tokens) AS total_input_tokens,
+                        SUM(model_output_tokens) AS total_output_tokens,
+                        json_group_array(
+                            json_object(
+                                'model', model,
+                                'total_cost', model_cost,
+                                'total_input_tokens', model_input_tokens,
+                                'total_output_tokens', model_output_tokens
+                            )
+                        ) AS model_details
                     FROM
-                        "LiteLLM_SpendLogs" sl
-                    WHERE
-                        sl."startTime" BETWEEN $1::date AND $2::date AND sl.api_key = $3
+                        SpendByModelApiKey
                     GROUP BY
-                        sl.api_key,
-                        sl.model
-                )
-                SELECT
-                    api_key,
-                    SUM(model_cost) AS total_cost,
-                    SUM(model_input_tokens) AS total_input_tokens,
-                    SUM(model_output_tokens) AS total_output_tokens,
-                    jsonb_agg(jsonb_build_object(
-                        'model', model,
-                        'total_cost', model_cost,
-                        'total_input_tokens', model_input_tokens,
-                        'total_output_tokens', model_output_tokens
-                    )) AS model_details
-                FROM
-                    SpendByModelApiKey
-                GROUP BY
-                    api_key
-                ORDER BY
-                    total_cost DESC;
-            """
-            db_response = await prisma_client.db.query_raw(
-                sql_query, start_date_obj, end_date_obj, api_key
-            )
-            if db_response is None:
-                return []
+                        api_key
+                    ORDER BY
+                        total_cost DESC;
+                """
+            else:
+                sql_query = """
+                    WITH SpendByModelApiKey AS (
+                        SELECT
+                            sl.api_key,
+                            sl.model,
+                            SUM(sl.spend) AS model_cost,
+                            SUM(sl.prompt_tokens) AS model_input_tokens,
+                            SUM(sl.completion_tokens) AS model_output_tokens
+                        FROM
+                            "LiteLLM_SpendLogs" sl
+                        WHERE
+                            sl."startTime" BETWEEN $1::date AND $2::date
+                        GROUP BY
+                            sl.api_key,
+                            sl.model
+                    )
+                    SELECT
+                        api_key,
+                        SUM(model_cost) AS total_cost,
+                        SUM(model_input_tokens) AS total_input_tokens,
+                        SUM(model_output_tokens) AS total_output_tokens,
+                        jsonb_agg(jsonb_build_object(
+                            'model', model,
+                            'total_cost', model_cost,
+                            'total_input_tokens', model_input_tokens,
+                            'total_output_tokens', model_output_tokens
+                        )) AS model_details
+                    FROM
+                        SpendByModelApiKey
+                    GROUP BY
+                        api_key
+                    ORDER BY
+                        total_cost DESC;
+                """
 
-            return db_response
-        elif internal_user_id is not None:
+        if internal_user_id is not None:
             verbose_proxy_logger.debug(
                 "Getting /spend for internal_user_id: %s", internal_user_id
             )
@@ -1080,13 +1175,6 @@ async def get_global_spend_report(
                 ORDER BY
                     total_cost DESC;
             """
-            db_response = await prisma_client.db.query_raw(
-                sql_query, start_date_obj, end_date_obj, internal_user_id
-            )
-            if db_response is None:
-                return []
-
-            return db_response
         elif team_id is not None and customer_id is not None:
             return await get_spend_by_team_and_customer(
                 start_date_obj, end_date_obj, team_id, customer_id, prisma_client
@@ -1217,40 +1305,79 @@ async def get_global_spend_report(
 
             return db_response
         elif group_by == "api_key":
-            sql_query = """
-                WITH SpendByModelApiKey AS (
+            if is_sqlite_db(prisma_client):
+                sql_query = """
+                    WITH SpendByModelApiKey AS (
+                        SELECT
+                            sl.api_key,
+                            sl.model,
+                            SUM(sl.spend) AS model_cost,
+                            SUM(sl.prompt_tokens) AS model_input_tokens,
+                            SUM(sl.completion_tokens) AS model_output_tokens
+                        FROM
+                            "LiteLLM_SpendLogs" sl
+                        WHERE
+                            sl.startTime BETWEEN ? AND ?
+                        GROUP BY
+                            sl.api_key,
+                            sl.model
+                    )
                     SELECT
-                        sl.api_key,
-                        sl.model,
-                        SUM(sl.spend) AS model_cost,
-                        SUM(sl.prompt_tokens) AS model_input_tokens,
-                        SUM(sl.completion_tokens) AS model_output_tokens
+                        api_key,
+                        SUM(model_cost) AS total_cost,
+                        SUM(model_input_tokens) AS total_input_tokens,
+                        SUM(model_output_tokens) AS total_output_tokens,
+                        json_group_array(
+                            json_object(
+                                'model', model,
+                                'total_cost', model_cost,
+                                'total_input_tokens', model_input_tokens,
+                                'total_output_tokens', model_output_tokens
+                            )
+                        ) AS model_details
                     FROM
-                        "LiteLLM_SpendLogs" sl
-                    WHERE
-                        sl."startTime" BETWEEN $1::date AND $2::date
+                        SpendByModelApiKey
                     GROUP BY
-                        sl.api_key,
-                        sl.model
-                )
-                SELECT
-                    api_key,
-                    SUM(model_cost) AS total_cost,
-                    SUM(model_input_tokens) AS total_input_tokens,
-                    SUM(model_output_tokens) AS total_output_tokens,
-                    jsonb_agg(jsonb_build_object(
-                        'model', model,
-                        'total_cost', model_cost,
-                        'total_input_tokens', model_input_tokens,
-                        'total_output_tokens', model_output_tokens
-                    )) AS model_details
-                FROM
-                    SpendByModelApiKey
-                GROUP BY
-                    api_key
-                ORDER BY
-                    total_cost DESC;
-            """
+                        api_key
+                    ORDER BY
+                        total_cost DESC;
+                """
+            else:
+                sql_query = """
+                    WITH SpendByModelApiKey AS (
+                        SELECT
+                            sl.api_key,
+                            sl.model,
+                            SUM(sl.spend) AS model_cost,
+                            SUM(sl.prompt_tokens) AS model_input_tokens,
+                            SUM(sl.completion_tokens) AS model_output_tokens
+                        FROM
+                            "LiteLLM_SpendLogs" sl
+                        WHERE
+                            sl."startTime" BETWEEN $1::date AND $2::date
+                        GROUP BY
+                            sl.api_key,
+                            sl.model
+                    )
+                    SELECT
+                        api_key,
+                        SUM(model_cost) AS total_cost,
+                        SUM(model_input_tokens) AS total_input_tokens,
+                        SUM(model_output_tokens) AS total_output_tokens,
+                        jsonb_agg(jsonb_build_object(
+                            'model', model,
+                            'total_cost', model_cost,
+                            'total_input_tokens', model_input_tokens,
+                            'total_output_tokens', model_output_tokens
+                        )) AS model_details
+                    FROM
+                        SpendByModelApiKey
+                    GROUP BY
+                        api_key
+                    ORDER BY
+                        total_cost DESC;
+                """
+
             db_response = await prisma_client.db.query_raw(
                 sql_query, start_date_obj, end_date_obj
             )
@@ -1284,11 +1411,27 @@ async def global_get_all_tag_names():
                 "Database not connected. Connect a database to your proxy - https://docs.litellm.ai/docs/simple_proxy#managing-auth---virtual-keys"
             )
 
-        sql_query = """
-        SELECT DISTINCT
-            jsonb_array_elements_text(request_tags) AS individual_request_tag
-        FROM "LiteLLM_SpendLogs";
-        """
+         # 检查数据库类型
+        is_sqlite = (hasattr(prisma_client.db, '_original_prisma') 
+                    and prisma_client.db._original_prisma._active_provider == 'sqlite')
+
+        if is_sqlite:
+            # SQLite 版本 - 使用 json_each 函数
+            sql_query = """
+            SELECT DISTINCT value as tag_name
+            FROM "LiteLLM_SpendLogs"
+            CROSS JOIN json_each(request_tags)
+            WHERE request_tags IS NOT NULL
+            ORDER BY tag_name;
+            """
+        else:
+            # PostgreSQL 版本保持不变
+            sql_query = """
+            SELECT DISTINCT jsonb_object_keys(request_tags) as tag_name
+            FROM "LiteLLM_SpendLogs"
+            WHERE request_tags IS NOT NULL
+            ORDER BY tag_name;
+            """
 
         db_response = await prisma_client.db.query_raw(sql_query)
         if db_response is None:
@@ -1904,10 +2047,20 @@ async def global_spend_refresh():
     view_exists = await is_materialized_global_spend_view()
 
     if view_exists:
-        # refresh materialized view
-        sql_query = """
-        REFRESH MATERIALIZED VIEW "MonthlyGlobalSpend";    
-        """
+        if is_sqlite_db(prisma_client):
+            # SQLite 不支持 MATERIALIZED VIEW，使用普通 VIEW
+            sql_query = """
+            DROP VIEW IF EXISTS "MonthlyGlobalSpend";
+            CREATE VIEW "MonthlyGlobalSpend" AS
+            SELECT date(startTime) as date, SUM(spend) as spend
+            FROM "LiteLLM_SpendLogs"
+            WHERE startTime >= date('now', '-30 day')
+            GROUP BY date(startTime);
+            """
+        else:
+            sql_query = """
+            REFRESH MATERIALIZED VIEW "MonthlyGlobalSpend";    
+            """
         try:
             from litellm.proxy._types import CommonProxyErrors
             from litellm.proxy.proxy_server import proxy_logging_obj
@@ -2223,17 +2376,17 @@ async def global_spend_per_team():
     sql_query = """
         SELECT
             t.team_alias as team_alias,
-            DATE(s."startTime") AS spend_date,
+            DATE(s.startTime) AS spend_date,
             SUM(s.spend) AS total_spend
         FROM
             "LiteLLM_SpendLogs" s
         LEFT JOIN
             "LiteLLM_TeamTable" t ON s.team_id = t.team_id
         WHERE
-            s."startTime" >= CURRENT_DATE - INTERVAL '30 days'
+            s.startTime >= date('now','-30 days')
         GROUP BY
             t.team_alias,
-            DATE(s."startTime")
+            DATE(s.startTime)
         ORDER BY
             spend_date;
         """
@@ -2360,7 +2513,27 @@ async def global_spend_end_users(data: Optional[GlobalEndUsersSpend] = None):
     startTime = startTime or datetime.now() - timedelta(days=30)
     endTime = endTime or datetime.now()
 
-    sql_query = """
+    if is_sqlite_db(prisma_client):
+        sql_query = """
+    SELECT end_user, COUNT(*) AS total_count, SUM(spend) AS total_spend
+    FROM "LiteLLM_SpendLogs"
+    WHERE "startTime" >= ?
+      AND "startTime" < ?
+      AND (? IS NULL OR api_key = ?)
+    GROUP BY end_user
+    ORDER BY total_spend DESC
+    LIMIT 100
+    """
+        # SQLite 查询需要传入4个参数
+        response = await prisma_client.db.query_raw(
+            sql_query,
+            startTime,
+            endTime,
+            selected_api_key,
+            selected_api_key,  # 需要重复传入 api_key
+        )
+    else:
+        sql_query = """
 SELECT end_user, COUNT(*) AS total_count, SUM(spend) AS total_spend
 FROM "LiteLLM_SpendLogs"
 WHERE "startTime" >= $1::timestamp
@@ -2374,8 +2547,8 @@ WHERE "startTime" >= $1::timestamp
 GROUP BY end_user
 ORDER BY total_spend DESC
 LIMIT 100
-    """
-    response = await prisma_client.db.query_raw(
+        """
+        response = await prisma_client.db.query_raw(
         sql_query, startTime, endTime, selected_api_key
     )
 

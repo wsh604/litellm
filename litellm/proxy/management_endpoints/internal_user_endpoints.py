@@ -296,7 +296,9 @@ async def user_info(
         prisma_client,
     )
 
+    print("Entering user_info function")  # 添加日志
     try:
+        print(f"user_api_key_dict: {user_api_key_dict}")  # 添加日志
         if prisma_client is None:
             raise Exception(
                 "Database not connected. Connect a database to your proxy - https://docs.litellm.ai/docs/simple_proxy#managing-auth---virtual-keys"
@@ -413,30 +415,158 @@ async def _get_user_info_for_proxy_admin():
 
     from litellm.proxy.proxy_server import prisma_client
 
-    sql_query = """
-        SELECT 
-            (SELECT json_agg(t.*) FROM "LiteLLM_TeamTable" t) as teams,
-            (SELECT json_agg(k.*) FROM "LiteLLM_VerificationToken" k WHERE k.team_id != 'litellm-dashboard') as keys
-    """
+    # Check if using SQLite or Postgres
+    is_sqlite = False
+    if hasattr(prisma_client.db, '_original_prisma'):
+        is_sqlite = prisma_client.db._original_prisma._active_provider == 'sqlite'
+    if is_sqlite:
+        # SQLite query 
+        sql_query = """
+            SELECT 
+                (
+                    SELECT json_group_array(
+                        json_object(
+                            'team_id', team_id,
+                            'team_alias', team_alias,
+                            'organization_id', organization_id,
+                            'admins', admins,
+                            'members', members,
+                            'members_with_roles', members_with_roles,
+                            'metadata', metadata,
+                            'max_budget', max_budget,
+                            'spend', spend,
+                            'models', models,
+                            'max_parallel_requests', max_parallel_requests,
+                            'tpm_limit', tpm_limit,
+                            'rpm_limit', rpm_limit,
+                            'budget_duration', budget_duration,
+                            'budget_reset_at', budget_reset_at,
+                            'model_spend', model_spend,
+                            'model_max_budget', model_max_budget
+                        )
+                    ) FROM "LiteLLM_TeamTable"
+                ) as teams,
+                (
+                    SELECT json_group_array(
+                        json_object(
+                            'token', token,
+                            'key_name', key_name,
+                            'key_alias', key_alias,
+                            'spend', spend,
+                            'expires', expires,
+                            'models', models,
+                            'aliases', aliases,
+                            'config', config,
+                            'user_id', user_id,
+                            'team_id', team_id,
+                            'permissions', permissions,
+                            'max_parallel_requests', max_parallel_requests,
+                            'metadata', metadata,
+                            'tpm_limit', tpm_limit,
+                            'rpm_limit', rpm_limit,
+                            'max_budget', max_budget,
+                            'budget_duration', budget_duration,
+                            'budget_reset_at', budget_reset_at,
+                            'allowed_cache_controls', allowed_cache_controls,
+                            'model_spend', model_spend,
+                            'model_max_budget', model_max_budget
+                        )
+                    ) 
+                    FROM "LiteLLM_VerificationToken" 
+                    WHERE team_id != 'litellm-dashboard'
+                ) as keys
+        """
+    else:
+        # Postgres query
+        sql_query = """
+            SELECT 
+                (SELECT json_agg(t.*) FROM "LiteLLM_TeamTable" t) as teams,
+                (SELECT json_agg(k.*) FROM "LiteLLM_VerificationToken" k WHERE k.team_id != 'litellm-dashboard') as keys
+        """
+
     if prisma_client is None:
         raise Exception(
             "Database not connected. Connect a database to your proxy - https://docs.litellm.ai/docs/simple_proxy#managing-auth---virtual-keys"
         )
 
     results = await prisma_client.db.query_raw(sql_query)
+    
+    if is_sqlite:
+        import json
+        # SQLite 返回的是 JSON 字符串，需要解析
+        _keys_in_db: List = json.loads(results[0]["keys"]) if results[0]["keys"] else []
+        _teams_in_db: List = json.loads(results[0]["teams"]) if results[0]["teams"] else []
+    else:
+        # PostgreSQL 已经返回解析好的 JSON
+        _keys_in_db: List = results[0]["keys"] or []
+        _teams_in_db: List = results[0]["teams"] or []
 
-    _keys_in_db: List = results[0]["keys"] or []
     # cast all keys to LiteLLM_VerificationToken
     keys_in_db = []
     for key in _keys_in_db:
-        if key.get("models") is None:
-            key["models"] = []
+        if isinstance(key, str):
+            # 如果还是字符串，再次解析
+            key = json.loads(key)
+        # 处理所有需要是列表的字段
+    list_fields = ["models", "allowed_cache_controls"]
+    for field in list_fields:
+        if isinstance(key.get(field), str):
+            try:
+                key[field] = json.loads(key[field])
+            except:
+                key[field] = []
+    
+    # 处理所有需要是字典的字段
+    dict_fields = ["aliases", "config", "permissions", "metadata", "model_spend", "model_max_budget"]
+    for field in dict_fields:
+        if isinstance(key.get(field), str):
+            try:
+                key[field] = json.loads(key[field])
+            except:
+                key[field] = {}
+    
+    # 处理日期时间字段
+    if key.get("expires") and isinstance(key["expires"], str):
+        try:
+            key["expires"] = datetime.fromisoformat(key["expires"].replace("Z", "+00:00"))
+        except:
+            key["expires"] = None
+            
+    # 处理数值字段
+    number_fields = ["spend", "max_parallel_requests", "tpm_limit", "rpm_limit", "max_budget"]
+    for field in number_fields:
+        if key.get(field) and isinstance(key[field], str):
+            try:
+                key[field] = float(key[field])
+            except:
+                key[field] = None
         keys_in_db.append(LiteLLM_VerificationToken(**key))
 
     # cast all teams to LiteLLM_TeamTable
-    _teams_in_db: List = results[0]["teams"] or []
+    teams_in_db = []
+    for team in _teams_in_db:
+        if isinstance(team, str):
+            # If still a string, parse again
+            team = json.loads(team)
+        if team.get("models") is None:
+            team["models"] = []
+        elif isinstance(team["models"], str):
+            team["models"] = json.loads(team["models"])
+            
+        # Parse string arrays/objects into Python objects
+        for field in ["admins", "members", "members_with_roles"]:
+            if team.get(field) is not None and isinstance(team[field], str):
+                team[field] = json.loads(team[field])
+                
+        # Parse string objects into Python dicts
+        for field in ["metadata", "model_spend", "model_max_budget"]:
+            if team.get(field) is not None and isinstance(team[field], str):
+                team[field] = json.loads(team[field])
+                
+        teams_in_db.append(team)
     _teams_in_db = [LiteLLM_TeamTable(**team) for team in _teams_in_db]
     returned_keys = _process_keys_for_user_info(keys=keys_in_db, all_teams=_teams_in_db)
+    
     return UserInfoResponse(
         user_id=None,
         user_info=None,
@@ -605,7 +735,6 @@ async def user_update(
         existing_user_row = await prisma_client.get_data(
             user_id=data.user_id, table_name="user", query_type="find_unique"
         )
-
         existing_metadata = existing_user_row.metadata if existing_user_row else {}
         verbose_proxy_logger.debug(f"existing_metadata type: {type(existing_metadata)}")
         verbose_proxy_logger.debug(f"existing_metadata value: {existing_metadata}")
@@ -621,7 +750,10 @@ async def user_update(
             non_default_values=non_default_values,
             existing_metadata=existing_metadata or {},
         )
-
+        # Add default empty list for models if not present
+        if "models" not in non_default_values:
+            non_default_values["models"] = "[]"
+            
         ## ADD USER, IF NEW ##
         verbose_proxy_logger.debug("/user/update: Received data = %s", data)
         response: Optional[Any] = None
@@ -735,34 +867,63 @@ async def get_users(
     skip = (page - 1) * page_size
     take = page_size
 
+    # Check if using SQLite
+    is_sqlite = (hasattr(prisma_client.db, '_original_prisma') 
+                and prisma_client.db._original_prisma._active_provider == 'sqlite')
+
     # Prepare the query conditions
     where_clause = ""
     if role:
         where_clause = f"""WHERE "user_role" = '{role}'"""
 
-    # Single optimized SQL query that gets both users and total count
-    sql_query = f"""
-    WITH total_users AS (
-        SELECT COUNT(*) AS total_number_internal_users
-        FROM "LiteLLM_UserTable"
-    ),
-    paginated_users AS (
+    if is_sqlite:
+        # SQLite query
+        sql_query = f"""
+        WITH total_users AS (
+            SELECT COUNT(*) AS total_number_internal_users
+            FROM "LiteLLM_UserTable"
+        ),
+        paginated_users AS (
+            SELECT 
+                u.*,
+                (
+                    SELECT COUNT(*) 
+                    FROM "LiteLLM_VerificationToken" vt 
+                    WHERE vt.user_id = u.user_id
+                ) AS key_count
+            FROM "LiteLLM_UserTable" u
+            {where_clause}
+            LIMIT {take} OFFSET {skip}
+        )
         SELECT 
-            u.*,
-            (
-                SELECT COUNT(*) 
-                FROM "LiteLLM_VerificationToken" vt 
-                WHERE vt."user_id" = u."user_id"
-            ) AS key_count
-        FROM "LiteLLM_UserTable" u
-        {where_clause}
-        LIMIT {take} OFFSET {skip}
-    )
-    SELECT 
-        (SELECT total_number_internal_users FROM total_users),
-        *
-    FROM paginated_users;
-    """
+            (SELECT total_number_internal_users FROM total_users) as total_number_internal_users,
+            paginated_users.*
+        FROM paginated_users;
+        """
+    else:
+        # Postgres query
+        sql_query = f"""
+        WITH total_users AS (
+            SELECT COUNT(*) AS total_number_internal_users
+            FROM "LiteLLM_UserTable"
+        ),
+        paginated_users AS (
+            SELECT 
+                u.*,
+                (
+                    SELECT COUNT(*) 
+                    FROM "LiteLLM_VerificationToken" vt 
+                    WHERE vt."user_id" = u."user_id"
+                ) AS key_count
+            FROM "LiteLLM_UserTable" u
+            {where_clause}
+            LIMIT {take} OFFSET {skip}
+        )
+        SELECT 
+            (SELECT total_number_internal_users FROM total_users),
+            *
+        FROM paginated_users;
+        """
 
     # Execute the query
     results = await prisma_client.db.query_raw(sql_query)

@@ -6651,53 +6651,103 @@ async def model_streaming_metrics(
     endTime = endTime or datetime.now()
 
     is_same_day = startTime.date() == endTime.date()
-    if is_same_day:
-        sql_query = """
-            SELECT
-                api_base,
-                model_group,
-                model,
-                "startTime",
-                request_id,
-                EXTRACT(epoch FROM ("completionStartTime" - "startTime")) AS time_to_first_token
-            FROM
-                "LiteLLM_SpendLogs"
-            WHERE
-                "model_group" = $1 AND "cache_hit" != 'True'
-                AND "completionStartTime" IS NOT NULL
-                AND "completionStartTime" != "endTime"
-                AND DATE("startTime") = DATE($2::timestamp)
-            GROUP BY
-                api_base,
-                model_group,
-                model,
-                request_id
-            ORDER BY
-                time_to_first_token DESC;
-        """
+    is_sqlite = hasattr(prisma_client.db, '_original_prisma') and prisma_client.db._original_prisma._active_provider == 'sqlite'
+    if is_sqlite:
+        if is_same_day:
+            sql_query = """
+                SELECT
+                    api_base,
+                    model_group,
+                    model,
+                    startTime,
+                    request_id,
+                    (julianday(completionStartTime) - julianday(startTime)) * 86400 AS time_to_first_token
+                FROM
+                    "LiteLLM_SpendLogs"
+                WHERE
+                    model_group = ? AND cache_hit != 'true'
+                    AND completionStartTime IS NOT NULL
+                    AND completionStartTime != endTime
+                    AND date(startTime) = date(?)
+                GROUP BY
+                    api_base,
+                    model_group,
+                    model,
+                    request_id
+                ORDER BY
+                    time_to_first_token DESC;
+            """
+        else:
+            sql_query = """
+                SELECT
+                    api_base,
+                    model_group,
+                    model,
+                    date(startTime) AS day,
+                    AVG((julianday(completionStartTime) - julianday(startTime)) * 86400) AS time_to_first_token
+                FROM
+                    "LiteLLM_SpendLogs"
+                WHERE
+                    startTime BETWEEN ? AND ?
+                    AND model_group = ? AND cache_hit != 'true'
+                    AND completionStartTime IS NOT NULL
+                    AND completionStartTime != endTime
+                GROUP BY
+                    api_base,
+                    model_group,
+                    model,
+                    day
+                ORDER BY
+                    time_to_first_token DESC;
+            """
     else:
-        sql_query = """
-            SELECT
-                api_base,
-                model_group,
-                model,
-                DATE_TRUNC('day', "startTime")::DATE AS day,
-                AVG(EXTRACT(epoch FROM ("completionStartTime" - "startTime"))) AS time_to_first_token
-            FROM
-                "LiteLLM_SpendLogs"
-            WHERE
-                "startTime" BETWEEN $2::timestamp AND $3::timestamp
-                AND "model_group" = $1 AND "cache_hit" != 'True'
-                AND "completionStartTime" IS NOT NULL
-                AND "completionStartTime" != "endTime"
-            GROUP BY
-                api_base,
-                model_group,
-                model,
-                day
-            ORDER BY
-                time_to_first_token DESC;
-        """
+        if is_same_day:
+            sql_query = """
+                SELECT
+                    api_base,
+                    model_group,
+                    model,
+                    "startTime",
+                    request_id,
+                    EXTRACT(epoch FROM ("completionStartTime" - "startTime")) AS time_to_first_token
+                FROM
+                    "LiteLLM_SpendLogs"
+                WHERE
+                    "model_group" = $1 AND "cache_hit" != 'True'
+                    AND "completionStartTime" IS NOT NULL
+                    AND "completionStartTime" != "endTime"
+                    AND DATE("startTime") = DATE($2::timestamp)
+                GROUP BY
+                    api_base,
+                    model_group,
+                    model,
+                    request_id
+                ORDER BY
+                    time_to_first_token DESC;
+            """
+        else:
+            sql_query = """
+                SELECT
+                    api_base,
+                    model_group,
+                    model,
+                    DATE_TRUNC('day', "startTime")::DATE AS day,
+                    AVG(EXTRACT(epoch FROM ("completionStartTime" - "startTime"))) AS time_to_first_token
+                FROM
+                    "LiteLLM_SpendLogs"
+                WHERE
+                    "startTime" BETWEEN $2::timestamp AND $3::timestamp
+                    AND "model_group" = $1 AND "cache_hit" != 'True'
+                    AND "completionStartTime" IS NOT NULL
+                    AND "completionStartTime" != "endTime"
+                GROUP BY
+                    api_base,
+                    model_group,
+                    model,
+                    day
+                ORDER BY
+                    time_to_first_token DESC;
+            """
 
     _all_api_bases = set()
     db_response = await prisma_client.db.query_raw(
@@ -6780,53 +6830,102 @@ async def model_metrics(
             param="None",
             code=status.HTTP_500_INTERNAL_SERVER_ERROR,
         )
-    startTime = startTime or datetime.now() - timedelta(days=30)
-    endTime = endTime or datetime.now()
+     # 处理时间
+    start_time = (startTime or datetime.now() - timedelta(days=30)).strftime("%Y-%m-%d %H:%M:%S")
+    end_time = (endTime or datetime.now()).strftime("%Y-%m-%d %H:%M:%S")
 
-    if api_key is None or api_key == "undefined":
-        api_key = "null"
+    # 处理参数
+    api_key = "null" if api_key in (None, "undefined") else api_key
+    customer = "null" if customer in (None, "undefined") else customer
 
-    if customer is None or customer == "undefined":
-        customer = "null"
+    # Check if using SQLite
+    is_sqlite = False
+    if prisma_client and hasattr(prisma_client, "_engine") and prisma_client._engine.is_sqlite():
+        is_sqlite = True
+    try:
+        if is_sqlite:
+            sql_query = """
+                SELECT
+                    api_base,
+                    model_group,
+                    model,
+                    date(startTime) as day,
+                    AVG(CASE 
+                        WHEN cache_hit = 'true' THEN 0 
+                        ELSE CAST(
+                            (julianday(endTime) - julianday(startTime)) * 86400.0 / NULLIF(completion_tokens, 0) AS REAL
+                        ) 
+                    END) as avg_latency_per_token
+                FROM LiteLLM_SpendLogs
+                WHERE
+                    datetime(startTime) >= datetime(?)
+                    AND datetime(startTime) <= datetime(?)
+                    AND model_group = ?
+                    AND cache_hit != 'true'
+                    AND (? = 'null' OR api_key = ?)
+                    AND (? = 'null' OR end_user = ?)
+                GROUP BY
+                    api_base,
+                    model_group,
+                    model,
+                    day
+                HAVING
+                    SUM(completion_tokens) > 0
+                ORDER BY
+                    avg_latency_per_token DESC;
+            """
+            params = [
+                start_time,
+                end_time,
+                _selected_model_group,
+                api_key, api_key,
+                customer, customer
+            ]
+        else:
+            # PostgreSQL 查询保持不变...
+            sql_query = """
+                SELECT
+                    api_base,
+                    model_group,
+                    model,
+                    DATE_TRUNC('day', "startTime")::DATE AS day,
+                    AVG(EXTRACT(epoch FROM ("endTime" - "startTime")) / NULLIF("completion_tokens", 0)) AS avg_latency_per_token
+                FROM "LiteLLM_SpendLogs"
+                WHERE
+                    "startTime" >= $1::timestamp 
+                    AND "startTime" <= $2::timestamp
+                    AND "model_group" = $3 
+                    AND "cache_hit" != 'True'
+                    AND (
+                        CASE
+                            WHEN $4 != 'null' THEN "api_key" = $4
+                            ELSE TRUE
+                        END
+                    )
+                    AND (
+                        CASE
+                            WHEN $5 != 'null' THEN "end_user" = $5
+                            ELSE TRUE
+                        END
+                    )
+                GROUP BY
+                    api_base,
+                    model_group,
+                    model,
+                    day
+                HAVING
+                    SUM(completion_tokens) > 0
+                ORDER BY
+                    avg_latency_per_token DESC;
+            """
+            params = [_selected_model_group, startTime, endTime, api_key, customer]
 
-    sql_query = """
-        SELECT
-            api_base,
-            model_group,
-            model,
-            DATE_TRUNC('day', "startTime")::DATE AS day,
-            AVG(EXTRACT(epoch FROM ("endTime" - "startTime")) / NULLIF("completion_tokens", 0)) AS avg_latency_per_token
-        FROM
-            "LiteLLM_SpendLogs"
-        WHERE
-            "startTime" >= $2::timestamp AND "startTime" <= $3::timestamp
-            AND "model_group" = $1 AND "cache_hit" != 'True'
-            AND (
-                CASE
-                    WHEN $4 != 'null' THEN "api_key" = $4
-                    ELSE TRUE
-                END
-            )
-            AND (
-                CASE
-                    WHEN $5 != 'null' THEN "end_user" = $5
-                    ELSE TRUE
-                END
-            )
-        GROUP BY
-            api_base,
-            model_group,
-            model,
-            day
-        HAVING
-            SUM(completion_tokens) > 0
-        ORDER BY
-            avg_latency_per_token DESC;
-    """
+        db_response = await prisma_client.db.query_raw(sql_query, *params)
+    except Exception as e:
+        print(f"Error executing query: {e}")
+        db_response = []
+
     _all_api_bases = set()
-    db_response = await prisma_client.db.query_raw(
-        sql_query, _selected_model_group, startTime, endTime, api_key, customer
-    )
     _daily_entries: dict = {}  # {"Jun 23": {"model1": 0.002, "model2": 0.003}}
 
     if db_response is not None:
@@ -6909,7 +7008,40 @@ async def model_metrics_slow_responses(
     )
     alerting_threshold = int(alerting_threshold)
 
-    sql_query = """
+    # Check if using SQLite
+    is_sqlite = (hasattr(prisma_client.db, '_original_prisma') 
+                and prisma_client.db._original_prisma._active_provider == 'sqlite')
+
+    if is_sqlite:
+        sqlite_query = """
+            SELECT
+                api_base,
+                COUNT(*) AS total_count,
+                SUM(CASE
+                    WHEN ((julianday(endTime) - julianday(startTime)) * 86400) >= ? THEN 1
+                    ELSE 0
+                END) AS slow_count
+            FROM "LiteLLM_SpendLogs"
+            WHERE model_group = ?
+                AND cache_hit != 'true'
+                AND datetime(startTime) >= datetime(?)
+                AND datetime(startTime) <= datetime(?)
+                AND (? = 'null' OR api_key = ?)
+                AND (? = 'null' OR end_user = ?)
+            GROUP BY api_base
+            ORDER BY slow_count DESC
+            """
+        db_response = await prisma_client.db.query_raw(
+                sqlite_query,
+                alerting_threshold,
+                _selected_model_group,
+                startTime,
+                endTime,
+                api_key, api_key,
+                customer, customer
+            )
+    else:
+        sql_query = """
 SELECT
     api_base,
     COUNT(*) AS total_count,
@@ -6940,9 +7072,9 @@ GROUP BY
     api_base
 ORDER BY
     slow_count DESC;
-    """
+        """
 
-    db_response = await prisma_client.db.query_raw(
+        db_response = await prisma_client.db.query_raw(
         sql_query,
         alerting_threshold,
         _selected_model_group,
@@ -6993,30 +7125,68 @@ async def model_metrics_exceptions(
 
     """
     """
-    sql_query = """
-        WITH cte AS (
-            SELECT 
-                CASE WHEN api_base = '' THEN litellm_model_name ELSE CONCAT(litellm_model_name, '-', api_base) END AS combined_model_api_base,
-                exception_type,
-                COUNT(*) AS num_rate_limit_exceptions
-            FROM "LiteLLM_ErrorLogs"
-            WHERE 
-                "startTime" >= $1::timestamp 
-                AND "endTime" <= $2::timestamp 
-                AND model_group = $3
-            GROUP BY combined_model_api_base, exception_type
-        )
+    # Check if using SQLite
+    is_sqlite = (hasattr(prisma_client.db, '_original_prisma') 
+                and prisma_client.db._original_prisma._active_provider == 'sqlite')
+
+    if is_sqlite:
+        sql_query = """
+    WITH cte AS (
         SELECT 
-            combined_model_api_base,
-            COUNT(*) AS total_exceptions,
-            json_object_agg(exception_type, num_rate_limit_exceptions) AS exception_counts
-        FROM cte
-        GROUP BY combined_model_api_base
-        ORDER BY total_exceptions DESC
-        LIMIT 200;
+            CASE 
+                WHEN api_base = '' OR api_base IS NULL THEN litellm_model_name 
+                ELSE litellm_model_name || '-' || api_base 
+            END AS combined_model_api_base,
+            exception_type,
+            COUNT(*) AS num_rate_limit_exceptions
+        FROM "LiteLLM_ErrorLogs"
+        WHERE 
+            datetime(startTime) >= datetime(?)
+            AND datetime(endTime) <= datetime(?)
+            AND model_group = ?
+        GROUP BY 
+            combined_model_api_base, 
+            exception_type
+    )
+    SELECT 
+        combined_model_api_base,
+        COUNT(*) AS total_exceptions,
+        json_group_array(
+            json_object(
+                'type', exception_type,
+                'count', num_rate_limit_exceptions
+            )
+        ) AS exception_counts
+    FROM cte
+    GROUP BY combined_model_api_base
+    ORDER BY total_exceptions DESC
+    LIMIT 200;
     """
+    else:
+        sql_query = """
+            WITH cte AS (
+                SELECT 
+                    CASE WHEN api_base = '' THEN litellm_model_name ELSE CONCAT(litellm_model_name, '-', api_base) END AS combined_model_api_base,
+                    exception_type,
+                    COUNT(*) AS num_rate_limit_exceptions
+                FROM "LiteLLM_ErrorLogs"
+                WHERE 
+                    "startTime" >= $1::timestamp 
+                    AND "endTime" <= $2::timestamp 
+                    AND model_group = $3
+                GROUP BY combined_model_api_base, exception_type
+            )
+            SELECT 
+                combined_model_api_base,
+                COUNT(*) AS total_exceptions,
+                json_object_agg(exception_type, num_rate_limit_exceptions) AS exception_counts
+            FROM cte
+            GROUP BY combined_model_api_base
+            ORDER BY total_exceptions DESC
+            LIMIT 200;
+        """
     db_response = await prisma_client.db.query_raw(
-        sql_query, startTime, endTime, _selected_model_group, api_key
+        sql_query, startTime, endTime, _selected_model_group
     )
     response: List[dict] = []
     exception_types = set()
@@ -7872,7 +8042,7 @@ async def login(request: Request):  # noqa: PLR0915
         jwt_token = jwt.encode(  # type: ignore
             {
                 "user_id": user_id,
-                "key": key,
+                "key": master_key,
                 "user_email": None,
                 "user_role": user_role,  # this is the path without sso - we can assume only admins will use this
                 "login_method": "username_password",

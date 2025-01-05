@@ -178,6 +178,7 @@ async def new_team(  # noqa: PLR0915
     if prisma_client is None:
         raise HTTPException(status_code=500, detail={"error": "No db connected"})
 
+        
     if data.team_id is None:
         data.team_id = str(uuid.uuid4())
     else:
@@ -192,7 +193,6 @@ async def new_team(  # noqa: PLR0915
                     "error": f"Team id = {data.team_id} already exists. Please use a different team id."
                 },
             )
-
     if (
         user_api_key_dict.user_role is None
         or user_api_key_dict.user_role != LitellmUserRoles.PROXY_ADMIN
@@ -297,6 +297,14 @@ async def new_team(  # noqa: PLR0915
     complete_team_data_dict = prisma_client.jsonify_team_object(
         db_data=complete_team_data_dict
     )
+    # Clean data for SQLite storage
+    # for key, value in complete_team_data_dict.items():
+    #     if isinstance(value, list) and len(value) == 0:
+    #         complete_team_data_dict[key] = "[]"
+    #     elif isinstance(value, dict) and len(value) == 0:
+    #         complete_team_data_dict[key] = "{}"
+    #     elif isinstance(value, (dict, list)):
+    #         complete_team_data_dict[key] = json.dumps(value)
     team_row: LiteLLM_TeamTable = await prisma_client.db.litellm_teamtable.create(
         data=complete_team_data_dict,
         include={"litellm_model_table": True},  # type: ignore
@@ -307,7 +315,7 @@ async def new_team(  # noqa: PLR0915
         ## add team id to user row ##
         await prisma_client.update_data(
             user_id=user.user_id,
-            data={"user_id": user.user_id, "teams": [team_row.team_id]},
+            data={"user_id": user.user_id, "teams": [team_row.team_id], "models": []},
             update_key_values_custom_query={
                 "teams": {
                     "push ": [team_row.team_id],

@@ -1143,23 +1143,38 @@ class PrismaClient:
                 "DailyTagSpend",
             ]
             required_view = "LiteLLM_VerificationTokenView"
-            expected_views_str = ", ".join(f"'{view}'" for view in expected_views)
-            pg_schema = os.getenv("DATABASE_SCHEMA", "public")
-            ret = await self.db.query_raw(
-                f"""
-                WITH existing_views AS (
-                    SELECT viewname
-                    FROM pg_views
-                    WHERE schemaname = '{pg_schema}' AND viewname IN (
-                        {expected_views_str}
+            
+            try:
+                # 尝试 PostgreSQL 方式
+                pg_schema = os.getenv("DATABASE_SCHEMA", "public")
+                expected_views_str = ", ".join(f"'{view}'" for view in expected_views)
+                ret = await self.db.query_raw(
+                    f"""
+                    WITH existing_views AS (
+                        SELECT viewname 
+                        FROM pg_views 
+                        WHERE schemaname = '{pg_schema}' AND viewname IN ({expected_views_str})
                     )
+                    SELECT 
+                        (SELECT COUNT(*) FROM existing_views) AS view_count,
+                        ARRAY_AGG(viewname) AS view_names
+                    FROM existing_views
+                    """
                 )
-                SELECT
-                    (SELECT COUNT(*) FROM existing_views) AS view_count,
-                    ARRAY_AGG(viewname) AS view_names
-                FROM existing_views
-                """
-            )
+            except Exception:
+                # 如果 PostgreSQL 查询失败，尝试 SQLite 方式
+                query = """
+                SELECT 
+                    COUNT(*) as view_count,
+                    GROUP_CONCAT(name) as view_names
+                FROM sqlite_master 
+                WHERE type='view' AND name IN ({})
+                """.format(",".join(f"?" for _ in expected_views))
+                ret = await self.db.query_raw(query, *expected_views)
+                # 转换 SQLite 结果为与 PostgreSQL 相同的格式
+                ret = [{"view_count": ret[0]["view_count"], 
+                       "view_names": ret[0]["view_names"].split(",") if ret[0]["view_names"] else []}]
+
             expected_total_views = len(expected_views)
             if ret[0]["view_count"] == expected_total_views:
                 verbose_proxy_logger.info("All necessary views exist!")
@@ -1168,6 +1183,7 @@ class PrismaClient:
                 ## check if required view exists ##
                 if ret[0]["view_names"] and required_view not in ret[0]["view_names"]:
                     await self.health_check()  # make sure we can connect to db
+                    # 创建视图的 SQL 是通用的，不需要修改
                     await self.db.execute_raw(
                         """
                             CREATE VIEW "LiteLLM_VerificationTokenView" AS
@@ -1538,14 +1554,14 @@ class PrismaClient:
                     t.max_budget AS team_max_budget, 
                     t.tpm_limit AS team_tpm_limit,
                     t.rpm_limit AS team_rpm_limit,
-                    t.models_text AS team_models,
-                    t.metadata_text AS team_metadata,
+                    t.models AS team_models,
+                    t.metadata AS team_metadata,
                     t.blocked AS team_blocked,
                     t.team_alias AS team_alias,
-                    t.metadata_text AS team_metadata,
-                    t.members_with_roles_text AS team_members_with_roles,
+                    t.metadata AS team_metadata,
+                    t.members_with_roles AS team_members_with_roles,
                     tm.spend AS team_member_spend,
-                    m.model_aliases_text as team_model_aliases
+                    m.model_aliases as team_model_aliases
                     FROM "LiteLLM_VerificationToken" AS v
                     LEFT JOIN "LiteLLM_TeamTable" AS t ON v.team_id = t.team_id
                     LEFT JOIN "LiteLLM_TeamMembership" AS tm ON v.team_id = tm.team_id AND tm.user_id = v.user_id

@@ -72,27 +72,55 @@ async def get_global_activity(
                 "Database not connected. Connect a database to your proxy - https://docs.litellm.ai/docs/simple_proxy#managing-auth---virtual-keys"
             )
 
-        sql_query = """
-            SELECT
-                CASE 
-                    WHEN vt."key_alias" IS NOT NULL THEN vt."key_alias"
-                    ELSE 'Unnamed Key'
-                END AS api_key,
-                sl."call_type",
-                sl."model",
-                COUNT(*) AS total_rows,
-                SUM(CASE WHEN sl."cache_hit" = 'True' THEN 1 ELSE 0 END) AS cache_hit_true_rows,
-                SUM(CASE WHEN sl."cache_hit" = 'True' THEN sl."completion_tokens" ELSE 0 END) AS cached_completion_tokens,
-                SUM(CASE WHEN sl."cache_hit" != 'True' THEN sl."completion_tokens" ELSE 0 END) AS generated_completion_tokens
-            FROM "LiteLLM_SpendLogs" sl
-            LEFT JOIN "LiteLLM_VerificationToken" vt ON sl."api_key" = vt."token"
-            WHERE 
-                sl."startTime" BETWEEN $1::date AND $2::date + interval '1 day'
-            GROUP BY 
-                vt."key_alias",
-                sl."call_type",
-                sl."model"
-        """
+        # Check if using SQLite
+        is_sqlite = (hasattr(prisma_client.db, '_original_prisma') 
+                    and prisma_client.db._original_prisma._active_provider == 'sqlite')
+
+        if is_sqlite:
+            sql_query = """
+                SELECT
+                    CASE 
+                        WHEN vt.key_alias IS NOT NULL THEN vt.key_alias
+                        ELSE 'Unnamed Key'
+                    END AS api_key,
+                    sl.call_type,
+                    sl.model,
+                    COUNT(*) AS total_rows,
+                    SUM(CASE WHEN sl.cache_hit = 'True' THEN 1 ELSE 0 END) AS cache_hit_true_rows,
+                    SUM(CASE WHEN sl.cache_hit = 'True' THEN sl.completion_tokens ELSE 0 END) AS cached_completion_tokens,
+                    SUM(CASE WHEN sl.cache_hit != 'True' THEN sl.completion_tokens ELSE 0 END) AS generated_completion_tokens
+                FROM "LiteLLM_SpendLogs" sl
+                LEFT JOIN "LiteLLM_VerificationToken" vt ON sl.api_key = vt.token
+                WHERE 
+                    datetime(sl.startTime) >= datetime(?)
+                    AND datetime(sl.startTime) < datetime(?, '+1 day')
+                GROUP BY 
+                    vt.key_alias,
+                    sl.call_type,
+                    sl.model
+            """
+        else:
+            sql_query = """
+                SELECT
+                    CASE 
+                        WHEN vt."key_alias" IS NOT NULL THEN vt."key_alias"
+                        ELSE 'Unnamed Key'
+                    END AS api_key,
+                    sl."call_type",
+                    sl."model",
+                    COUNT(*) AS total_rows,
+                    SUM(CASE WHEN sl."cache_hit" = 'True' THEN 1 ELSE 0 END) AS cache_hit_true_rows,
+                    SUM(CASE WHEN sl."cache_hit" = 'True' THEN sl."completion_tokens" ELSE 0 END) AS cached_completion_tokens,
+                    SUM(CASE WHEN sl."cache_hit" != 'True' THEN sl."completion_tokens" ELSE 0 END) AS generated_completion_tokens
+                FROM "LiteLLM_SpendLogs" sl
+                LEFT JOIN "LiteLLM_VerificationToken" vt ON sl."api_key" = vt."token"
+                WHERE 
+                    sl."startTime" BETWEEN $1::date AND $2::date + interval '1 day'
+                GROUP BY 
+                    vt."key_alias",
+                    sl."call_type",
+                    sl."model"
+            """
         db_response = await prisma_client.db.query_raw(
             sql_query, start_date_obj, end_date_obj
         )

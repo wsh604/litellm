@@ -1,13 +1,10 @@
 datasource client {
-  provider = "sqlite"
+  provider = "postgresql"
   url      = env("DATABASE_URL")
 }
 
 generator client {
-  provider        = "prisma-client-py"
-  binaryTargets   = ["native"]
-  engineType      = "binary"
-  previewFeatures = ["nativeTypes", "filterJson"]
+  provider = "prisma-client-py"
 }
 
 // Budget / Rate Limits for an org
@@ -18,7 +15,7 @@ model LiteLLM_BudgetTable {
   max_parallel_requests Int?
   tpm_limit     BigInt?
   rpm_limit     BigInt?
-  model_max_budget String @default("{}")
+  model_max_budget Json?
   budget_duration String? 
   budget_reset_at DateTime?
   created_at    DateTime               @default(now()) @map("created_at")
@@ -36,8 +33,8 @@ model LiteLLM_BudgetTable {
 model LiteLLM_ProxyModelTable {
   model_id String @id @default(uuid())
   model_name String 
-  litellm_params String
-  model_info String?
+  litellm_params Json
+  model_info Json? 
   created_at    DateTime               @default(now()) @map("created_at")
   created_by String
   updated_at    DateTime               @default(now()) @updatedAt @map("updated_at")
@@ -48,10 +45,10 @@ model LiteLLM_OrganizationTable {
 		organization_id String @id @default(uuid())
     organization_alias  String
     budget_id String
-    metadata  String  @default("{}")
-    models     String
+    metadata  Json  @default("{}")
+    models     String[]
     spend      Float    @default(0.0)
-    model_spend   String   @default("{}")
+    model_spend      Json @default("{}")
     created_at    DateTime               @default(now()) @map("created_at")
     created_by String
     updated_at    DateTime               @default(now()) @updatedAt @map("updated_at")
@@ -64,7 +61,7 @@ model LiteLLM_OrganizationTable {
 // Model info for teams, just has model aliases for now.
 model LiteLLM_ModelTable {
   id Int @id @default(autoincrement())
-  model_aliases String?
+  model_aliases Json? @map("aliases")
   created_at    DateTime               @default(now()) @map("created_at")
   created_by String
   updated_at    DateTime               @default(now()) @updatedAt @map("updated_at")
@@ -78,13 +75,13 @@ model LiteLLM_TeamTable {
 		team_id    String @id @default(uuid())
     team_alias  String? 
     organization_id String?
-    admins String
-    members String
-    members_with_roles String @default("{}")
-    metadata  String  @default("{}")
+    admins String[]
+    members String[]
+    members_with_roles Json @default("{}")
+    metadata  Json  @default("{}")
     max_budget Float?
     spend      Float    @default(0.0)
-    models     String
+    models     String[]
     max_parallel_requests Int?
     tpm_limit     BigInt?
     rpm_limit     BigInt?
@@ -93,8 +90,8 @@ model LiteLLM_TeamTable {
     blocked Boolean @default(false)
     created_at    DateTime               @default(now()) @map("created_at")
     updated_at    DateTime               @default(now()) @updatedAt @map("updated_at")
-    model_spend      String @default("{}")
-    model_max_budget String  @default("{}")
+    model_spend      Json @default("{}")
+    model_max_budget Json @default("{}")
     model_id Int? @unique // id for LiteLLM_ModelTable -> stores team-level model aliases
     litellm_organization_table LiteLLM_OrganizationTable?   @relation(fields: [organization_id], references: [organization_id])
     litellm_model_table LiteLLM_ModelTable? @relation(fields: [model_id], references: [id])
@@ -107,31 +104,30 @@ model LiteLLM_UserTable {
     team_id    String?
     organization_id String?
     password  String?
-    teams    String @default("[]")
+    teams    String[] @default([])
     user_role  String?
 		max_budget Float?
     spend      Float    @default(0.0)
     user_email    String?
-    models     String
-    metadata  String  @default("{}")
+    models     String[]
+    metadata  Json  @default("{}")
     max_parallel_requests Int?
     tpm_limit     BigInt?
     rpm_limit     BigInt?
     budget_duration String? 
     budget_reset_at DateTime?
-    allowed_cache_controls String  @default("[]")
-    model_spend      String  @default("{}")
-    model_max_budget String  @default("{}")
+    allowed_cache_controls String[] @default([])
+    model_spend      Json @default("{}")
+    model_max_budget Json @default("{}")
     created_at      DateTime?               @default(now()) @map("created_at")
     updated_at      DateTime?               @default(now()) @updatedAt @map("updated_at")
 
     // relations
-    litellm_organization_table LiteLLM_OrganizationTable?         @relation(fields: [organization_id], references: [organization_id])
+    litellm_organization_table LiteLLM_OrganizationTable?                   @relation(fields: [organization_id], references: [organization_id])
     organization_memberships LiteLLM_OrganizationMembership[]
     invitations_created LiteLLM_InvitationLink[] @relation("CreatedBy")
     invitations_updated LiteLLM_InvitationLink[] @relation("UpdatedBy")
     invitations_user    LiteLLM_InvitationLink[] @relation("UserId")
-
 }
 
 // Generate Tokens for Proxy
@@ -142,23 +138,23 @@ model LiteLLM_VerificationToken {
     soft_budget_cooldown Boolean @default(false) // key-level state on if budget alerts need to be cooled down
     spend      Float    @default(0.0)
     expires    DateTime?
-    models     String
-    aliases    String @default("{}")
-    config     String  @default("{}")
+    models     String[]
+    aliases    Json  @default("{}")
+    config     Json  @default("{}")
     user_id    String?
     team_id    String?
-    permissions String  @default("{}")
+    permissions Json @default("{}")
     max_parallel_requests Int?
-    metadata   String  @default("{}")
+    metadata   Json  @default("{}")
     blocked Boolean?
     tpm_limit     BigInt?
     rpm_limit     BigInt?
     max_budget Float?    
     budget_duration String? 
     budget_reset_at DateTime?
-    allowed_cache_controls String @default("[]")
-    model_spend      String  @default("{}")
-    model_max_budget String  @default("{}")
+    allowed_cache_controls String[] @default([])
+    model_spend      Json @default("{}")
+    model_max_budget Json @default("{}")
     budget_id String?
     created_at      DateTime?               @default(now()) @map("created_at")
     updated_at      DateTime?               @default(now()) @updatedAt @map("updated_at")
@@ -179,7 +175,7 @@ model LiteLLM_EndUserTable {
 // store proxy config.yaml
 model LiteLLM_Config {
   param_name String @id
-  param_value String?
+  param_value Json?
 }
 
 // View spend, model, api_key per request
@@ -197,13 +193,13 @@ model LiteLLM_SpendLogs {
   model               String   @default("")
   model_id            String?   @default("") // the model id stored in proxy model db
   model_group         String?   @default("") // public model_name / model_group
-  custom_llm_provider String?   @default("")
+  custom_llm_provider String?   @default("") // litellm used custom_llm_provider
   api_base            String?   @default("")
   user                String?   @default("")
-  metadata            String?   @default("{}")
+  metadata            Json?     @default("{}")
   cache_hit           String?   @default("")
   cache_key           String?   @default("")
-  request_tags        String?  @default("[]")
+  request_tags        Json?     @default("[]")
   team_id             String? 
   end_user            String?
   requester_ip_address String?
@@ -220,7 +216,7 @@ model LiteLLM_ErrorLogs {
   model_group         String   @default("")      // public model_name / model_group
   litellm_model_name  String   @default("")      // model passed to litellm
   model_id            String   @default("")      // ID of model in ProxyModelTable
-  request_kwargs      String   @default("{}")
+  request_kwargs      Json     @default("{}")
   exception_type      String   @default("")
   exception_string    String   @default("")
   status_code         String   @default("")
@@ -230,7 +226,7 @@ model LiteLLM_ErrorLogs {
 model LiteLLM_UserNotifications {
   request_id          String @id
   user_id             String 
-  models              String 
+  models              String[]
   justification       String
   status              String // approved, disapproved, pending
 }
@@ -290,174 +286,6 @@ model LiteLLM_AuditLog {
   action             String      // create, update, delete
   table_name         String      // on of  LitellmTableNames.TEAM_TABLE_NAME, LitellmTableNames.USER_TABLE_NAME, LitellmTableNames.PROXY_MODEL_TABLE_NAME,
   object_id          String      // id of the object being audited. This can be the key id, team id, user id, model id
-  before_value       String?
-  updated_values     String?
+  before_value       Json?       // value of the row 
+  updated_values     Json?       // value of the row after change
 }
-
-// 以下表格用于兼容支持 LibreChat
-
-// 助手表
-model Assistant {
-  id                    String    @id @default(uuid())
-  assistantId          String    @unique  // OpenAI Assistant ID
-  user                  WubanUserMapping   @relation(fields: [userId], references: [wuban_user_id])
-  userId                String    // 改为关联 wuban_user_id
-  
-  name                  String
-  description           String?
-  instructions          String?
-  metadata             String? @map("metadata_text")
-  tools                String @map("tools_text")
-  model                 String
-  fileIds              String @map("fileIds_text")
-  
-  avatarPath           String?   // 头像文件路径
-  avatarSource         String?   // 头像来源
-  conversationStarters String @map("conversationStarters_text")
-  appendCurrentDatetime Boolean  @default(false)
-
-  createdAt            DateTime  @default(now())
-  updatedAt            DateTime  @updatedAt
-
-  @@map("assistants")
-}
-
-// 代理表
-model Agent {
-  id              String    @id @default(uuid())
-  user            WubanUserMapping   @relation(fields: [userId], references: [wuban_user_id])
-  userId          String    // 改为关联 wuban_user_id
-  
-  name            String
-  description     String?
-  instructions    String?
-  context         String?
-  avatar          String?
-  modelParameters String? @map("modelParameters_text")
-  tools           String @map("tools_text")
-  isCollaborative Boolean   @default(false)
-  projectIds      String @map("projectIds_text")
-
-  createdAt       DateTime  @default(now())
-  updatedAt       DateTime  @updatedAt
-
-  @@map("agents")
-}
-
-// 会话表
-model Conversation {
-  id              String    @id @default(uuid())
-  conversationId  String    @unique
-  user            WubanUserMapping   @relation(fields: [userId], references: [wuban_user_id])
-  userId          String    // 改为关联 wuban_user_id
-  
-  title           String?
-  model           String?
-  modelDisplayLabel String?
-  endpoint        String?   // 添加 endpoint 字段
-  endpointType    String?   // 添加 endpointType 字段
-  isArchived      Boolean   @default(false)
-  messages        Message[]
-  tags            ConversationTag[]
-  
-  createdAt       DateTime  @default(now())
-  updatedAt       DateTime  @updatedAt
-
-  @@map("conversation")
-}
-
-// 消息表
-model Message {
-  id              String    @id @default(uuid())
-  messageId       String    @unique
-  conversation    Conversation @relation(fields: [conversationId], references: [conversationId])
-  conversationId  String
-  user            WubanUserMapping @relation(fields: [userId], references: [wuban_user_id])
-  userId          String    // 改为关联 wuban_user_id
-  
-  text            String
-  sender          String    // "user" 或 "assistant"
-  parentMessageId String? 
-  isCreatedByUser Boolean   @default(false)
-  model           String?
-  endpoint        String?
-  endpointType    String?
-  files           MessageFile[]
-  
-  error          String?   // 添加错误信息字段
-  unfinished     Boolean   @default(false)  // 消息是否未完成
-  isEdited       Boolean   @default(false)  // 消息是否被编辑过
-  
-  createdAt       DateTime  @default(now())
-  updatedAt       DateTime  @updatedAt
-
-  @@map("message")
-}
-
-// 文件表
-model File {
-  id              String    @id @default(uuid())
-  fileId          String    @unique
-  user            WubanUserMapping @relation(fields: [userId], references: [wuban_user_id])
-  userId          String    
-  
-  name            String
-  type            String
-  size            Int
-  url             String?
-  messages        MessageFile[]
-  
-  createdAt       DateTime  @default(now())
-  updatedAt       DateTime  @updatedAt
-
-  @@map("file")
-}
-
-// 消息-文件关联表
-model MessageFile {
-  id          String    @id @default(uuid())
-  message     Message   @relation(fields: [messageId], references: [messageId])
-  messageId   String
-  file        File     @relation(fields: [fileId], references: [id])
-  fileId      String
-
-  createdAt   DateTime @default(now())
-  updatedAt   DateTime @updatedAt
-
-  @@unique([messageId, fileId])
-  @@map("message_file")
-}
-
-// 会话标签表
-model ConversationTag {
-  id              String    @id @default(uuid())
-  conversation    Conversation @relation(fields: [conversationId], references: [conversationId])
-  conversationId  String
-  
-  tag             String
-  color           String?
-
-  createdAt       DateTime  @default(now())
-  updatedAt       DateTime  @updatedAt
-
-  @@unique([conversationId, tag])
-  @@map("conversation_tag")
-}
-
-// Wuban 用户与 LiteLLM 用户关联表
-model WubanUserMapping {
-  id              String    @id @default(uuid())
-  wuban_user_id   String    @unique  
-  litellm_user_id String    
-  created_at      DateTime  @default(now())
-  updated_at      DateTime  @updatedAt
-
-  // 添加与 LibreChat 相关表的关联
-  conversations   Conversation[]
-  messages        Message[]
-  files           File[]
-  assistants      Assistant[]
-  agents          Agent[]
-
-  @@map("wuban_user_mapping")
-} 

@@ -178,7 +178,7 @@ const ViewUserDashboard: React.FC<ViewUserDashboardProps> = ({
             accessToken,
             null,
             userRole,
-            true,
+            false,
             currentPage,
             defaultPageSize
           );

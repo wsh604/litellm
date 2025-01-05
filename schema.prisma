@@ -18,7 +18,7 @@ model LiteLLM_BudgetTable {
   max_parallel_requests Int?
   tpm_limit     BigInt?
   rpm_limit     BigInt?
-  model_max_budget String @map("model_max_budget_text") @default("{}")
+  model_max_budget String @default("{}")
   budget_duration String? 
   budget_reset_at DateTime?
   created_at    DateTime               @default(now()) @map("created_at")
@@ -36,8 +36,8 @@ model LiteLLM_BudgetTable {
 model LiteLLM_ProxyModelTable {
   model_id String @id @default(uuid())
   model_name String 
-  litellm_params String @map("litellm_params_text")
-  model_info String? @map("model_info_text")
+  litellm_params String
+  model_info String?
   created_at    DateTime               @default(now()) @map("created_at")
   created_by String
   updated_at    DateTime               @default(now()) @updatedAt @map("updated_at")
@@ -48,10 +48,10 @@ model LiteLLM_OrganizationTable {
 		organization_id String @id @default(uuid())
     organization_alias  String
     budget_id String
-    metadata  String @map("metadata_text") @default("{}")
-    models     String @map("models_text")
+    metadata  String  @default("{}")
+    models     String
     spend      Float    @default(0.0)
-    model_spend      String @map("model_spend_text") @default("{}")
+    model_spend   String   @default("{}")
     created_at    DateTime               @default(now()) @map("created_at")
     created_by String
     updated_at    DateTime               @default(now()) @updatedAt @map("updated_at")
@@ -64,7 +64,7 @@ model LiteLLM_OrganizationTable {
 // Model info for teams, just has model aliases for now.
 model LiteLLM_ModelTable {
   id Int @id @default(autoincrement())
-  model_aliases String? @map("model_aliases_text")
+  model_aliases String?
   created_at    DateTime               @default(now()) @map("created_at")
   created_by String
   updated_at    DateTime               @default(now()) @updatedAt @map("updated_at")
@@ -78,13 +78,13 @@ model LiteLLM_TeamTable {
 		team_id    String @id @default(uuid())
     team_alias  String? 
     organization_id String?
-    admins String @map("admins_text")
-    members String @map("members_text")
-    members_with_roles String @map("members_with_roles_text") @default("{}")
-    metadata  String @map("metadata_text") @default("{}")
+    admins String @default("[]")
+    members String @default("[]")
+    members_with_roles String @default("{}")
+    metadata  String  @default("{}")
     max_budget Float?
     spend      Float    @default(0.0)
-    models     String @map("models_text")
+    models     String @default("[]") 
     max_parallel_requests Int?
     tpm_limit     BigInt?
     rpm_limit     BigInt?
@@ -93,8 +93,8 @@ model LiteLLM_TeamTable {
     blocked Boolean @default(false)
     created_at    DateTime               @default(now()) @map("created_at")
     updated_at    DateTime               @default(now()) @updatedAt @map("updated_at")
-    model_spend      String @map("model_spend_text") @default("{}")
-    model_max_budget String @map("model_max_budget_text") @default("{}")
+    model_spend      String @default("{}")
+    model_max_budget String  @default("{}")
     model_id Int? @unique // id for LiteLLM_ModelTable -> stores team-level model aliases
     litellm_organization_table LiteLLM_OrganizationTable?   @relation(fields: [organization_id], references: [organization_id])
     litellm_model_table LiteLLM_ModelTable? @relation(fields: [model_id], references: [id])
@@ -107,21 +107,21 @@ model LiteLLM_UserTable {
     team_id    String?
     organization_id String?
     password  String?
-    teams    String @map("teams_text") @default("[]")
+    teams    String @default("[]")
     user_role  String?
 		max_budget Float?
     spend      Float    @default(0.0)
     user_email    String?
-    models     String @map("models_text")
-    metadata  String @map("metadata_text") @default("{}")
+    models     String
+    metadata  String  @default("{}")
     max_parallel_requests Int?
     tpm_limit     BigInt?
     rpm_limit     BigInt?
     budget_duration String? 
     budget_reset_at DateTime?
-    allowed_cache_controls String @map("allowed_cache_controls_text") @default("[]")
-    model_spend      String @map("model_spend_text") @default("{}")
-    model_max_budget String @map("model_max_budget_text") @default("{}")
+    allowed_cache_controls String  @default("[]")
+    model_spend      String  @default("{}")
+    model_max_budget String  @default("{}")
     created_at      DateTime?               @default(now()) @map("created_at")
     updated_at      DateTime?               @default(now()) @updatedAt @map("updated_at")
 
@@ -142,23 +142,23 @@ model LiteLLM_VerificationToken {
     soft_budget_cooldown Boolean @default(false) // key-level state on if budget alerts need to be cooled down
     spend      Float    @default(0.0)
     expires    DateTime?
-    models     String @map("models_text")
-    aliases    String @map("aliases_text") @default("{}")
-    config     String @map("config_text") @default("{}")
+    models     String
+    aliases    String @default("{}")
+    config     String  @default("{}")
     user_id    String?
     team_id    String?
-    permissions String @map("permissions_text") @default("{}")
+    permissions String  @default("{}")
     max_parallel_requests Int?
-    metadata   String @map("metadata_text") @default("{}")
+    metadata   String  @default("{}")
     blocked Boolean?
     tpm_limit     BigInt?
     rpm_limit     BigInt?
     max_budget Float?    
     budget_duration String? 
     budget_reset_at DateTime?
-    allowed_cache_controls String @map("allowed_cache_controls_text") @default("[]")
-    model_spend      String @map("model_spend_text") @default("{}")
-    model_max_budget String @map("model_max_budget_text") @default("{}")
+    allowed_cache_controls String @default("[]")
+    model_spend      String  @default("{}")
+    model_max_budget String  @default("{}")
     budget_id String?
     created_at      DateTime?               @default(now()) @map("created_at")
     updated_at      DateTime?               @default(now()) @updatedAt @map("updated_at")
@@ -179,7 +179,7 @@ model LiteLLM_EndUserTable {
 // store proxy config.yaml
 model LiteLLM_Config {
   param_name String @id
-  param_value String? @map("param_value_text")
+  param_value String?
 }
 
 // View spend, model, api_key per request
@@ -200,10 +200,10 @@ model LiteLLM_SpendLogs {
   custom_llm_provider String?   @default("")
   api_base            String?   @default("")
   user                String?   @default("")
-  metadata            String? @map("metadata_text") @default("{}")
+  metadata            String?   @default("{}")
   cache_hit           String?   @default("")
   cache_key           String?   @default("")
-  request_tags        String? @map("request_tags_text") @default("[]")
+  request_tags        String?  @default("[]")
   team_id             String? 
   end_user            String?
   requester_ip_address String?
@@ -220,7 +220,7 @@ model LiteLLM_ErrorLogs {
   model_group         String   @default("")      // public model_name / model_group
   litellm_model_name  String   @default("")      // model passed to litellm
   model_id            String   @default("")      // ID of model in ProxyModelTable
-  request_kwargs      String @map("request_kwargs_text") @default("{}")
+  request_kwargs      String   @default("{}")
   exception_type      String   @default("")
   exception_string    String   @default("")
   status_code         String   @default("")
@@ -230,7 +230,7 @@ model LiteLLM_ErrorLogs {
 model LiteLLM_UserNotifications {
   request_id          String @id
   user_id             String 
-  models              String @map("models_text")
+  models              String 
   justification       String
   status              String // approved, disapproved, pending
 }
@@ -290,8 +290,8 @@ model LiteLLM_AuditLog {
   action             String      // create, update, delete
   table_name         String      // on of  LitellmTableNames.TEAM_TABLE_NAME, LitellmTableNames.USER_TABLE_NAME, LitellmTableNames.PROXY_MODEL_TABLE_NAME,
   object_id          String      // id of the object being audited. This can be the key id, team id, user id, model id
-  before_value       String? @map("before_value_text")
-  updated_values     String? @map("updated_values_text")
+  before_value       String?
+  updated_values     String?
 }
 
 // 以下表格用于兼容支持 LibreChat

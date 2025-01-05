@@ -5,11 +5,20 @@
     "version": "0.2.0",
     "configurations": [
         {
-            "name": "litellm ",
-            "type": "debugpy",
+            "name": "LiteLLM Proxy Debug",
+            "type": "python",
             "request": "launch",
-            "module": "litellm.proxy.proxy_cli",
-            "args": ["--config", "lite_config.yaml"]
+            "module": "uvicorn",
+            "args": [
+                "litellm.proxy.proxy_server:app",
+                "--host",
+                "0.0.0.0",
+                "--port",
+                "15490",
+                "--reload"
+            ],
+            "jinja": true,
+            "justMyCode": false
         }
     ]
 }
