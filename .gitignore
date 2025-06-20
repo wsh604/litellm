@@ -72,6 +72,7 @@ tests/llm_translation/log.txt
 htmlcov/
 .coverage
 coverage.xml
+<<<<<<< Updated upstream
 
 # Logs
 logs/
@@ -85,3 +86,6 @@ local_debug
 
 deploy.env
 upload/
+=======
+local_debug
+>>>>>>> Stashed changes
