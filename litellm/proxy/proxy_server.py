@@ -25,6 +25,7 @@ from typing import (
     get_type_hints,
 )
 
+from litellm.proxy.wuban.user import UserService
 
 if TYPE_CHECKING:
     from opentelemetry.trace import Span as _Span
@@ -231,6 +232,9 @@ from litellm.proxy.ui_crud_endpoints.proxy_setting_endpoints import (
 
 from litellm.proxy.wuban.models import (
     router as wuban_model_router
+)
+from litellm.proxy.wuban.sms import (
+    router as wuban_sms_router
 )
 
 from litellm.proxy.utils import (
@@ -3204,6 +3208,7 @@ async def startup_event():
     if prisma_client is not None:
         librechat_router.prisma_client = prisma_client
         wuban_model_router.file_upload_prisma_client = prisma_client
+        UserService.prisma_client = prisma_client
 #### API ENDPOINTS ####
 @router.get(
     "/v1/models", dependencies=[Depends(user_api_key_auth)], tags=["model management"]
@@ -9434,5 +9439,6 @@ app.include_router(ui_crud_endpoints_router)
 app.include_router(openai_files_router)
 app.include_router(team_callback_router)
 app.include_router(wuban_model_router)
+app.include_router(wuban_sms_router)
 
 wuban_model_router.model_list = model_list

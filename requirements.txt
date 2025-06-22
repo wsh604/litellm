@@ -48,4 +48,6 @@ tenacity==8.2.3  # for retrying requests, when litellm.num_retries set
 pydantic==2.7.1 # proxy + openai req.
 jsonschema==4.22.0 # validating json schema
 websockets==10.4 # for realtime API
+alibabacloud_dysmsapi20170525>=2.0.24
+aliyun-python-sdk-dypnsapi>=1.0.4
 ####

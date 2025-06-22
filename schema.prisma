@@ -461,3 +461,12 @@ model WubanUserMapping {
 
   @@map("wuban_user_mapping")
 } 
+
+// 与ailocal、aicloud关联的用户登录
+model AiUser {
+  id        Int      @id @default(autoincrement())
+  username      String @default("")
+  createdAt DateTime @default(now())
+  phone     String   @unique
+  avatar    String   @default("")
+}

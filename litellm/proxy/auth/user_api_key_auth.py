@@ -789,11 +789,14 @@ async def user_api_key_auth(  # noqa: PLR0915
         if isinstance(
             api_key, str
         ):  # if generated token, make sure it starts with sk-.
-            assert api_key.startswith(
-                "sk-"
-            ), "LiteLLM Virtual Key expected. Received={}, expected to start with 'sk-'.".format(
+            # assert api_key.startswith(
+            #     "sk-"
+            # ), "LiteLLM Virtual Key expected. Received={}, expected to start with 'sk-'.".format(
+            #     api_key
+            # )  # prevent token hashes from being used
+            verbose_logger.warning("LiteLLM Virtual Key expected. Received={}, expected to start with 'sk-'.".format(
                 api_key
-            )  # prevent token hashes from being used
+            ))
         else:
             verbose_logger.warning(
                 "litellm.proxy.proxy_server.user_api_key_auth(): Warning - Key={} is not a string.".format(

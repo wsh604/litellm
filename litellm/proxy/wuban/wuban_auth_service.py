@@ -7,6 +7,7 @@ from litellm.proxy._types import UserAPIKeyAuth
 from fastapi import Depends, Request, HTTPException
 from litellm.proxy.auth.user_api_key_auth import user_api_key_auth
 from .logger_util import WubanLogger
+from .user import UserService
 
 # 获取 WubanLogger 实例
 logger = WubanLogger.get_logger()
@@ -65,7 +66,43 @@ class WubanAuthService:
                     "litellm_user_id": litellm_proxy_default_admin_id
                 }
             )
-        
+
+    async def authenticate_request_for_desk(
+            self,
+            request: Request
+    ) -> Tuple[UserAPIKeyAuth, str]:
+        """
+        1. 获取并验证 token
+        2. 从 token中获取当前用户的电话号码
+        3. 返回 (UserAPIKeyAuth, wuban_user_id)
+        """
+        # 1. 获取并验证 token，Authorization已经被使用，这里我们使用 wuban_token
+        wuban_token = request.headers.get("Authorization")
+        if not wuban_token:
+            raise HTTPException(status_code=401, detail="No token provided")
+
+        # 通过jwt解析token内容
+        payload = await UserService.verify_token(wuban_token)
+        if not payload or not payload["phone"]:
+            raise HTTPException(status_code=401, detail="Invalid token")
+
+        phone = payload["phone"]
+
+
+        from litellm.proxy.proxy_server import (
+            litellm_proxy_admin_name as litellm_proxy_default_admin_id,
+            master_key
+        )
+
+        user_api_key_dict = UserAPIKeyAuth(
+            api_key=f"Bearer {master_key}",
+            user_id=litellm_proxy_default_admin_id,
+            user_role="proxy_admin"
+        )
+
+        # 返回 (UserAPIKeyAuth, wuban_user_id)
+        return user_api_key_dict, phone
+
 
     async def authenticate_request(
         self,
@@ -113,7 +150,7 @@ async def wuban_auth(
     wuban_auth_service: WubanAuthService = Depends(lambda: WubanAuthService(auth_url="https://wuban-auth-url"))
 ) -> Tuple[UserAPIKeyAuth, str]:
     
-    return await wuban_auth_service.authenticate_request(
+    return await wuban_auth_service.authenticate_request_for_desk(
         request=request
     )
 
