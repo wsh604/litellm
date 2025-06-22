@@ -22,4 +22,4 @@ if [ ! -f local_debug/dev.db ]; then
     echo "FILE_UPLOAD_BASE_DIR=$(pwd)/local_debug/files/" >> ./litellm/proxy/.env
 fi
 # 安装完python环境后，执行下面这个命令即可。
-python -m litellm.proxy.proxy_cli --config ./litellm/proxy/config.yaml
+python -m litellm.proxy.proxy_cli --config ./litellm/proxy/lite_config.yaml
