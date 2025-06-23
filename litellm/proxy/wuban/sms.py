@@ -13,13 +13,16 @@ router = APIRouter(tags=["短信服务"])
 )
 async def send_verification_code(request: SMSCodeRequest):
     """发送手机验证码"""
-    success = await UserService.send_sms_code(request.phone)
-    if not success:
-        raise BusinessError(ErrorCode.SMS_SEND_FAILED)
-        
+    try:
+        success = await UserService.send_sms_code(request.phone)
+        if not success:
+            raise BusinessError(ErrorCode.SMS_SEND_FAILED)
+    except BusinessError as e:
+        return Response.error(e.error_code.code, e.detail)
+
     return Response.success(
         data={"phone": request.phone},
-        message="Verification code sent"
+        message= success["message"]
     )
 
 @router.post(
@@ -29,7 +32,10 @@ async def send_verification_code(request: SMSCodeRequest):
 )
 async def verify_code(request: SMSVerifyRequest):
     """验证码登录"""
-    result = await UserService.verify_sms_code(request.phone, request.code)
+    try:
+        result = await UserService.verify_sms_code(request.phone, request.code)
+    except BusinessError as e:
+        return Response.error(e.error_code.code, e.detail)
     return Response.success(
         data=TokenResponse(
             token=result["token"],

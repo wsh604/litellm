@@ -5,6 +5,8 @@ from datetime import datetime, timedelta
 import random
 import json
 from typing import Optional, Dict, Any, TypeVar, Generic
+
+import requests
 from alibabacloud_dysmsapi20170525.client import Client as SmsClient
 from alibabacloud_tea_openapi import models as open_api_models
 from alibabacloud_dysmsapi20170525 import models as sms_models
@@ -14,45 +16,44 @@ from starlette.responses import JSONResponse
 from litellm.proxy.wuban.exceptions import BusinessError, ErrorCode
 
 # 内存记录当前验证码，key为phone，value为code
-sms_code_cache = {}
 _jwt_secret = "joyoful2025"
 _jwt_expire_days = 30
 
 
 class UserService:
     """用户服务"""
-    _sms_client: Optional[SmsClient] = None
-    _acs_client: Optional[AcsClient] = None
-    sms_access_key = os.getenv("sms_access_key")
-    sms_access_secret = os.getenv("sms_access_secret")
-    sms_sign_name = os.getenv("sms_sign_name")
-    sms_template_code = os.getenv("sms_template_code")
+    # _sms_client: Optional[SmsClient] = None
+    # _acs_client: Optional[AcsClient] = None
+    # sms_access_key = os.getenv("sms_access_key")
+    # sms_access_secret = os.getenv("sms_access_secret")
+    # sms_sign_name = os.getenv("sms_sign_name")
+    # sms_template_code = os.getenv("sms_template_code")
     prisma_client = None
 
-    @classmethod
-    def get_sms_client(cls) -> SmsClient:
-        """获取阿里云短信客户端"""
-        print(os.environ)
-        print(">>>smsaccesskey>>>" + cls.sms_access_key)
-        if not cls._sms_client:
-            config = open_api_models.Config(
-                access_key_id=cls.sms_access_key,
-                access_key_secret=cls.sms_access_secret
-            )
-            config.endpoint = 'dysmsapi.aliyuncs.com'
-            cls._sms_client = SmsClient(config)
-        return cls._sms_client
-
-    @classmethod
-    def get_acs_client(cls) -> AcsClient:
-        """获取阿里云ACS客户端"""
-        if not cls._acs_client:
-            cls._acs_client = AcsClient(
-                cls.sms_access_key,
-                cls.sms_access_secret,
-                'cn-hangzhou'
-            )
-        return cls._acs_client
+    # @classmethod
+    # def get_sms_client(cls) -> SmsClient:
+    #     """获取阿里云短信客户端"""
+    #     print(os.environ)
+    #     print(">>>smsaccesskey>>>" + cls.sms_access_key)
+    #     if not cls._sms_client:
+    #         config = open_api_models.Config(
+    #             access_key_id=cls.sms_access_key,
+    #             access_key_secret=cls.sms_access_secret
+    #         )
+    #         config.endpoint = 'dysmsapi.aliyuncs.com'
+    #         cls._sms_client = SmsClient(config)
+    #     return cls._sms_client
+    #
+    # @classmethod
+    # def get_acs_client(cls) -> AcsClient:
+    #     """获取阿里云ACS客户端"""
+    #     if not cls._acs_client:
+    #         cls._acs_client = AcsClient(
+    #             cls.sms_access_key,
+    #             cls.sms_access_secret,
+    #             'cn-hangzhou'
+    #         )
+    #     return cls._acs_client
 
     @classmethod
     async def send_sms_code(cls, phone: str):
@@ -65,37 +66,19 @@ class UserService:
                     detail="Invalid phone number format"
                 )
 
-            # 2. 检查发送频率限制
-            # if await cls._is_rate_limited(phone):
-            #     raise BusinessError(
-            #         error_code=ErrorCode.SMS_RATE_LIMIT,
-            #         detail="SMS sending too frequently"
-            #     )
-
-            # 3. 生成验证码
-            # code = ''.join(random.choices('0123456789', k=6))
-            # 默认先写死一个验证码
-            code = '000000'
-            # 4. 发送短信
-            # send_request = sms_models.SendSmsRequest(
-            #     phone_numbers=phone,
-            #     sign_name=cls.sms_sign_name,
-            #     template_code=cls.sms_template_code,
-            #     template_param=json.dumps({'code': code})
-            # )
-
-            # response = cls.get_sms_client().send_sms(send_request)
-
-            # if response.body.code != 'OK':
-            #     raise BusinessError(
-            #         error_code=ErrorCode.SMS_SEND_FAILED,
-            #         detail=response.body.message
-            #     )
-
-            # 5. 保存验证码
-            sms_code_cache[f'{phone}'] = f'{code}'
-            print("验证码发送成功" + phone + "," + code)
-            return {"status": "success"}
+            print("start send >>>" + phone)
+            # 调用发送验证码的网络请求
+            data = {
+                "phone": phone,
+            }
+            try:
+                print("start send >>>" + phone)
+                response = requests.post("https://aimii.joyoful.com/api/sms/code", json=data)
+                result = response.json()
+                print("验证码发送结果:" + str(result["code"]))
+                return result
+            except Exception as e:
+                print("send error:" + str(e))
 
         except BusinessError:
             raise
@@ -124,58 +107,49 @@ class UserService:
                 detail="Verification code is required"
             )
 
-        # 万能验证码 - 仅用于特定手机号测试
-        # if phone == "15652391475" and code == "000000":
-        #     # 查询本地数据库
-        #     ai_user = await UserService.prisma_client.db.aiuser.upsert(
-        #         where={
-        #             'phone': phone
-        #         },
-        #         data={
-        #             'create': {
-        #                 'phone': phone,
-        #                 'name': 'LLM-' + phone
-        #             },
-        #             'update': {}
-        #         }
-        #     )
-        #     print(ai_user)
-        #     return {
-        #         "token": UserService.create_token(phone),
-        #         "phone": phone,
-        #         "user_id": phone
-        #     }
-
         # 验证码检查
-        key = f"{phone}"
-        saved_code = sms_code_cache.get(key)
+        result = None
+        if phone == "15652391475" and code == "000000":
+            print("inner dev code, skip verify")
+            result = {
+                "code": 0,
+                "message": "Login success"
+            }
+        else:
+            data = {
+                "phone": phone,
+                "code": code
+            }
+            resp = requests.post("https://aimii.joyoful.com/api/sms/verify", json=data)
+            result = resp.json()
+            print(result)
 
-        if not saved_code:
-            raise BusinessError(ErrorCode.SMS_CODE_EXPIRED)
+        # 校验结果
+        if result["code"] != 0:
+            raise BusinessError(
+                error_code=ErrorCode.SMS_SEND_FAILED,
+                detail=result["message"]
+            )
 
-        if saved_code != code:
-            raise BusinessError(ErrorCode.SMS_CODE_INVALID)
-
-        # 删除已使用的验证码
-        del sms_code_cache[key]
-
-        # 获取或创建用户
-        user = await UserService.prisma_client.db.aiuser.upsert(
+        # 查询用户是否存在
+        user = await UserService.prisma_client.db.aiuser.find_unique(
             where={
                 'phone': phone
-            },
-            data={
-                'create': {
-                    'phone': phone,
-                    'username': phone,
-                    'avatar': "http://file7.dacai.online/tmp/wuban_logo.jpg",
-                },
-                'update': {}
             }
         )
+        if not user:
+            # 创建用户
+            user = await UserService.prisma_client.db.aiuser.create(data = {
+                'phone': phone,
+                'username': phone,
+                'avatar': "http://file7.dacai.online/tmp/wuban_logo.jpg",
+            })
+
+            # 发送网络请求给ailocal创建大脑 TODO
+            print("create a brain...")
+
         # 打印user的json串
         print(user)
-        # 直接使用 user.id，因为它已经是 UUID 对象
         return {
             "token": UserService.create_token(phone),
             "user": {
@@ -185,6 +159,7 @@ class UserService:
                 "avatar": user.avatar,
             }
         }
+
 
     @staticmethod
     def create_token(phone: str) -> str:
