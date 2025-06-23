@@ -1,16 +1,8 @@
-import os
-
 import jwt
 from datetime import datetime, timedelta
-import random
-import json
 from typing import Optional, Dict, Any, TypeVar, Generic
 
 import requests
-from alibabacloud_dysmsapi20170525.client import Client as SmsClient
-from alibabacloud_tea_openapi import models as open_api_models
-from alibabacloud_dysmsapi20170525 import models as sms_models
-from aliyunsdkcore.client import AcsClient
 from starlette.responses import JSONResponse
 
 from litellm.proxy.wuban.exceptions import BusinessError, ErrorCode
@@ -139,7 +131,7 @@ class UserService:
         )
         if not user:
             # 创建用户
-            user = await UserService.prisma_client.db.aiuser.create(data = {
+            user = await UserService.prisma_client.db.aiuser.create(data={
                 'phone': phone,
                 'username': phone,
                 'avatar': "http://file7.dacai.online/tmp/wuban_logo.jpg",
@@ -159,7 +151,6 @@ class UserService:
                 "avatar": user.avatar,
             }
         }
-
 
     @staticmethod
     def create_token(phone: str) -> str:
