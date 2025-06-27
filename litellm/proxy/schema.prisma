@@ -469,4 +469,5 @@ model AiUser {
   createdAt DateTime @default(now())
   phone     String   @unique
   avatar    String   @default("")
+  brainid   String   @default("")
 }

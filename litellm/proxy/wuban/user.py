@@ -1,3 +1,6 @@
+import logging
+import os
+
 import jwt
 from datetime import datetime, timedelta
 from typing import Optional, Dict, Any, TypeVar, Generic
@@ -11,6 +14,7 @@ from litellm.proxy.wuban.exceptions import BusinessError, ErrorCode
 _jwt_secret = "joyoful2025"
 _jwt_expire_days = 30
 
+logger = logging.getLogger(__name__)
 
 class UserService:
     """用户服务"""
@@ -58,19 +62,19 @@ class UserService:
                     detail="Invalid phone number format"
                 )
 
-            print("start send >>>" + phone)
+            logger.info("start send >>>" + phone)
             # 调用发送验证码的网络请求
             data = {
                 "phone": phone,
             }
             try:
-                print("start send >>>" + phone)
+                logger.info("start send >>>" + phone)
                 response = requests.post("https://aimii.joyoful.com/api/sms/code", json=data)
                 result = response.json()
-                print("验证码发送结果:" + str(result["code"]))
+                logger.info("验证码发送结果:" + str(result["code"]))
                 return result
             except Exception as e:
-                print("send error:" + str(e))
+                logger.info("send error:" + str(e))
 
         except BusinessError:
             raise
@@ -102,7 +106,7 @@ class UserService:
         # 验证码检查
         result = None
         if phone == "15652391475" and code == "000000":
-            print("inner dev code, skip verify")
+            logger.info("inner dev code, skip verify")
             result = {
                 "code": 0,
                 "message": "Login success"
@@ -114,7 +118,7 @@ class UserService:
             }
             resp = requests.post("https://aimii.joyoful.com/api/sms/verify", json=data)
             result = resp.json()
-            print(result)
+            logger.info(result)
 
         # 校验结果
         if result["code"] != 0:
@@ -137,18 +141,53 @@ class UserService:
                 'avatar': "http://file7.dacai.online/tmp/wuban_logo.jpg",
             })
 
-            # 发送网络请求给ailocal创建大脑 TODO
-            print("create a brain...")
-
         # 打印user的json串
-        print(user)
+        logger.info(user)
+
+        token = UserService.create_token(phone)
+        # 检查表中branid是否存在
+        if user.brainid == "":
+            logger.info("brainid is empty, create a brain...")
+            try:
+                data = {
+                  "name": "Default brain",
+                  "description": "This is my private knowledge brain",
+                  "status": "private",
+                  "model": "string",
+                  "temperature": 0,
+                  "max_tokens": 2000,
+                  "prompt_id": "3fa85f64-5717-4562-b3fc-2c963f66afa6",
+                  "brain_type": "doc"
+                }
+                headers = {
+                    'Authorization': 'Bearer ' + token,  # 如果需要认证
+                }
+                host = os.getenv("AI_LOCAL_HOST")
+                ret = requests.post(host + "/brains", json=data, headers=headers)
+                json_ret = ret.json()
+                logger.info(json_ret)
+
+                # 保存brainid到数据库。
+                await UserService.prisma_client.db.aiuser.update(
+                    where={
+                        'id': user.id
+                    },
+                    data={
+                        'brainid': json_ret["id"]
+                    }
+                )
+                user.brainid = json_ret["id"]
+            except Exception as e:
+                logger.error("create a brain error:" + str(e))
+
         return {
-            "token": UserService.create_token(phone),
+            "token": token,
             "user": {
                 "id": str(user.id),
                 "phone": user.phone,
                 "username": user.username,
                 "avatar": user.avatar,
+                "brainid": user.brainid
             }
         }
 
@@ -164,10 +203,10 @@ class UserService:
                 'phone': str(phone),  # UUID 转字符串
                 'exp': datetime.utcnow() + timedelta(days=_jwt_expire_days)
             }
-            print(f"Token payload: {payload}")  # 调试日志
+            logger.info(f"Token payload: {payload}")  # 调试日志
             return jwt.encode(payload, _jwt_secret, algorithm='HS256')
         except Exception as e:
-            print(f"Token generation error: {e}")
+            logger.error(f"Token generation error: {e}")
             raise
 
     @classmethod
@@ -293,6 +332,7 @@ class UserInfo(BaseModel):
     username: str
     phone: str
     avatar: str
+    brainid: str
 
 
 class TokenResponse(BaseModel):

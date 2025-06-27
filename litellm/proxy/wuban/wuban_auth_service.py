@@ -1,4 +1,5 @@
 import asyncio
+import os
 from typing import Optional, Tuple
 from datetime import datetime
 from pydantic import BaseModel
@@ -77,7 +78,13 @@ class WubanAuthService:
         3. 返回 (UserAPIKeyAuth, wuban_user_id)
         """
         # 1. 获取并验证 token，Authorization已经被使用，这里我们使用 wuban_token
-        wuban_token = request.headers.get("Authorization")
+        wuban_token = None
+        try:
+            authorization = request.headers.get("Authorization")
+            # 获取Authorization: Bearer $TOKEN
+            wuban_token = authorization.split(" ")[1] if authorization else None
+        except Exception:
+            raise HTTPException(status_code=401, detail="No token provided")
         if not wuban_token:
             raise HTTPException(status_code=401, detail="No token provided")
 
@@ -94,6 +101,7 @@ class WubanAuthService:
             master_key
         )
 
+        #构造一个假的给litellm
         user_api_key_dict = UserAPIKeyAuth(
             api_key=f"Bearer {master_key}",
             user_id=litellm_proxy_default_admin_id,
@@ -149,10 +157,16 @@ async def wuban_auth(
     request: Request,
     wuban_auth_service: WubanAuthService = Depends(lambda: WubanAuthService(auth_url="https://wuban-auth-url"))
 ) -> Tuple[UserAPIKeyAuth, str]:
-    
-    return await wuban_auth_service.authenticate_request_for_desk(
-        request=request
-    )
+    if os.getenv("RUN_IN_BOX") == "0":
+        # 桌面版
+        return await wuban_auth_service.authenticate_request_for_desk(
+            request=request
+        )
+    else:
+        #  手机版
+        return await wuban_auth_service.authenticate_request(
+            request=request
+        )
 
 # 组合认证函数
 async def combined_auth(
@@ -175,7 +189,7 @@ async def combined_auth(
         # 返回 CombinedAuthResult 对象
         return CombinedAuthResult(
             litellm_auth=litellm_auth,
-            wuban_id=wuban_user_id
+            wuban_id=wuban_user_id,
         )
     except Exception as e:
         raise HTTPException(

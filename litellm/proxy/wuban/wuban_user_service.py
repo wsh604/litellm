@@ -44,7 +44,8 @@ class WubanUserService:
             trace_id = str(uuid.uuid4().hex)
             device_id = "426F1DEC-84D6-431C-B615-D41C9221A130"  # 可以考虑从环境变量获取
             timestamp = int(time.time() * 1000)  # 当前时间戳（毫秒）
-            
+            if os.getenv("RUN_IN_BOX") == "0":
+                return WubanUserInfo(id=user_id, name=user_id)
             payload = {
                 "jsonrpc": "2.0",
                 "method": "uc:fetchUserProfile",

@@ -1,5 +1,7 @@
 from datetime import datetime
-from fastapi import APIRouter, Depends, Request, Response, HTTPException
+
+import requests
+from fastapi import APIRouter, Depends, Request, Response, HTTPException, UploadFile
 from pydantic.main import BaseModel
 from litellm import router
 from litellm.exceptions import APIConnectionError
@@ -957,3 +959,71 @@ async def handle_error_response(error: Exception,user_message: UserMessage,
         logger.error(f"Traceback: {traceback.format_exc()}")
         basic_error = "抱歉,系统处理出现异常,请稍后重试。"
         yield f"event: message\ndata: {json.dumps({'message': basic_error, 'error': True})}\n\n"
+
+
+AI_LOCAL_HOST = os.getenv("AI_LOCAL_HOST")
+
+@librechat_router.post(
+    "/file/uploadAndParse",
+    description="上传并解析文件",
+    tags=["rag"])
+async def upAndParse(request: Request, uploadFile: UploadFile, auth_result: CombinedAuthResult = Depends(combined_auth)):
+    """
+    向ailocal发送文件上传
+    """
+    file_content = await uploadFile.read()
+    #文件上传
+    response = requests.post(
+        AI_LOCAL_HOST + '/upload',  # 替换为你的实际 API URL
+        files={
+            "uploadFile": (uploadFile.filename, file_content)
+        },
+        headers={
+            'Authorization': 'Bearer ' + get_token_from_headers(request),  # 如果需要认证
+        }
+    )
+    logger.info(f"[FILE] File upload response: {response.status_code}")
+    return response.json()
+
+
+@librechat_router.delete(
+    "/file/{id}",
+    description="根据知识id删除文件",
+    tags=["rag"])
+async def file_delete(request: Request, auth_result: CombinedAuthResult = Depends(combined_auth)):
+    response = requests.delete(
+        AI_LOCAL_HOST + f'/knowledge/{id}',  # 替换为你的实际 API URL
+        headers={
+            'Authorization': 'Bearer ' + get_token_from_headers(request),  # 如果需要认证
+        }
+    )
+    return response.json()
+
+@librechat_router.get(
+    "/file",
+    description="获取文件列表",
+    tags=["rag"])
+async def file_list(request: Request, auth_result: CombinedAuthResult = Depends(combined_auth)):
+    response = requests.get(
+        AI_LOCAL_HOST + '/knowledge',  # 替换为你的实际 API URL
+        headers={
+            'Authorization': 'Bearer ' + get_token_from_headers(request),  # 如果需要认证
+        }
+    )
+    return response.json()
+
+
+
+
+
+def get_token_from_headers(request: Request) -> str:
+    """
+    从请求头中获取token
+    """
+    try:
+        auth_header = request.headers.get("Authorization")
+        if auth_header:
+            return auth_header.split(" ")[1]
+    except Exception as e:
+        logger.error(f"Error in get_token_from_headers: {str(e)}")
+        return ""
