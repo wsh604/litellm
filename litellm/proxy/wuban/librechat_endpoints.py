@@ -987,12 +987,13 @@ async def upAndParse(request: Request, uploadFile: UploadFile, auth_result: Comb
 
 
 @librechat_router.delete(
-    "/file/{id}",
+    "/file/{knowledge_id}",
     description="根据知识id删除文件",
     tags=["rag"])
-async def file_delete(request: Request, auth_result: CombinedAuthResult = Depends(combined_auth)):
+async def file_delete(request: Request, knowledge_id: uuid.UUID, auth_result: CombinedAuthResult = Depends(combined_auth)):
+    ## /knowledge/1ed7b897-3361-4921-9711-85cde11b4f6e
     response = requests.delete(
-        AI_LOCAL_HOST + f'/knowledge/{id}',  # 替换为你的实际 API URL
+        AI_LOCAL_HOST + f'/knowledge/{knowledge_id}',  # 替换为你的实际 API URL
         headers={
             'Authorization': 'Bearer ' + get_token_from_headers(request),  # 如果需要认证
         }
