@@ -471,3 +471,10 @@ model AiUser {
   avatar    String   @default("")
   brainid   String   @default("")
 }
+
+// litellm的chat和ailocal的chat映射
+model ChatMapping {
+    id          Int      @id @default(autoincrement())
+    chat_id     String
+    conversation_id String @unique
+}

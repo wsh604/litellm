@@ -19,7 +19,7 @@ import uuid
 import json
 from fastapi.responses import StreamingResponse
 import traceback
-from .wuban_auth_service import WubanAuthService, combined_auth, CombinedAuthResult
+from .wuban_auth_service import WubanAuthService, combined_auth, CombinedAuthResult, wuban_auth
 from .logger_util import WubanLogger
 import base64
 import aiohttp
@@ -195,13 +195,14 @@ async def delete_conversation(
 class StreamEventManager:
     """管理流式事件的生成和格式化"""
     
-    def __init__(self, user_message: UserMessage, model: str):
+    def __init__(self, user_message: UserMessage, model: str, useAiLocal: bool = False):
         self.user_message = user_message
         self.model = model
         self.assistant_message_id = str(uuid.uuid4())
         self.full_response = ""
         self.first_chunk = True
         self.logger = logger
+        self.useAiLocal = useAiLocal
     
     def process_chunk(self, chunk: Union[str, bytes]) -> Optional[str]:
         """处理单个数据块并返回格式化的事件"""
@@ -228,6 +229,7 @@ class StreamEventManager:
             error_content = "\n[发生错误：响应可能不完整]"
             self.full_response += error_content
             return self._create_message_event(error_content)
+
     def _normalize_chunk(self, chunk: Union[str, bytes]) -> Optional[str]:
         """标准化 chunk 数据"""
         try:
@@ -250,8 +252,41 @@ class StreamEventManager:
     def _extract_content(self, chunk_str: str) -> Optional[str]:
         """从 chunk 中提取内容"""
         try:
+            # logger.debug("#_extract_content")
             chunk_data = json.loads(chunk_str)
             # self.logger.debug(f"Parsed JSON: {chunk_data}")
+            # 处理来自ailocal的数据
+            if self.useAiLocal:
+                """
+                开始：
+                {"chat_id":"8ed3ee62-b8e0-4bc1-a1f6-51b8e4b0aa19",
+                "message_id":"c5dda676-75c4-4e2f-8f62-7058d39a48e2",
+                "user_message":"链家的技术序列介绍",
+                "message_time":"2025-07-01T15:23:45.177049",
+                "assistant":"根据",
+                "prompt_title":"",
+                "brain_name":"Default brain",
+                "brain_id":"022de0c3-7705-5028-4e84-19ceaf2baccd",
+                "metadata":{"citations":null,"thoughts":null,"followup_questions":null,"sources":"[]"},
+                "thumbs":null}
+                
+                结束：
+                {"chat_id":"8ed3ee62-b8e0-4bc1-a1f6-51b8e4b0aa19",
+                "message_id":"c5dda676-75c4-4e2f-8f62-7058d39a48e2",
+                "user_message":"链家的技术序列介绍",
+                "message_time":"2025-07-01T15:23:45.177049",
+                "assistant":"","prompt_title":"","brain_name":"Default brain",
+                "brain_id":"022de0c3-7705-5028-4e84-19ceaf2baccd",
+                "metadata":{"citations":null,"thoughts":null,"followup_questions":null,
+                "sources":"[page_content='# Lianjia Technical Title System\n\n## Title Mapping\n- P12 = 首席科学家\n- P11 = 总架构师\n- P10 = 资深架构师\n- P9 = 架构师\n- P8 = 资深工程师\n- P7 = 资深工程师\n- P6 = 高级工程师\n- P5 = 工程师\n- P4 = 工程师\n- P3 = 实习工程师\n\n## Explanation of Technical Titles\n1. Technical titles are designed to quantify the current capabilities of an engineer.\n2. Technical titles are evaluated once a year, with specific evaluation criteria set by the Lianjia Technical Committee.' metadata={'file_sha1': None, 'file_size': 407177, 'file_name': '链家网技术序列.pdf', 'chunk_size': 400, 'chunk_overlap': 100, 'date': '20250628', 'original_file_name': '链家网技术序列.pdf', 'integration': '', 'integration_link': '', 'index': 0, 'relevance_score': 0.84375}, page_content='It seems that the provided text does not contain any tables or checkboxes to extract and transform. If you have specific tables or checkbox data that you would like me to process, please provide that information, and I will be happy to assist you!' metadata={'file_sha1': None, 'file_size': 524881, 'file_name': 'Machine Learning Evaluation.pdf', 'chunk_size': 400, 'chunk_overlap': 100, 'date': '20250628', 'original_file_name': 'Machine Learning Evaluation.pdf', 'integration': '', 'integration_link': '', 'index': 1, 'relevance_score': 0.5625}, page_content='It seems that the provided text does not contain any tables or checkboxes to extract and transform. If you have specific content or tables you would like me to process, please provide that information, and I'll be happy to assist!' metadata={'file_sha1': None, 'file_size': 13549, 'file_name': '测试文档_副本.docx', 'chunk_size': 400, 'chunk_overlap': 100, 'date': '20250628', 'original_file_name': '测试文档_副本.docx', 'integration': '', 'integration_link': '', 'index': 2, 'relevance_score': 0.546875}, page_content='## 5. 工作场所安全管理\n安全隐患管理 = 确保工作区域内无安全隐患，如易燃物品妥善存放、电线电缆布置合理等。\n紧急出口标志 = 设立明显标志指示紧急出口位置，并保持通道畅通无阻。\n消防设施检查 = 定期对消防设施进行检查维护，保证其处于良好状态。' metadata={'file_sha1': None, 'file_size': 122525, 'file_name': '安全生产管理规范-test.pdf', 'chunk_size': 400, 'chunk_overlap': 100, 'date': '20250628', 'original_file_name': '安全生产管理规范-test.pdf', 'integration': '', 'integration_link': '', 'index': 3, 'relevance_score': 0.4765625}]"},
+                "thumbs":null}
+                """
+                # chat_id = chunk_data["chat_id"]
+                # message_id = chunk_data["message_id"]
+                # user_message = chunk_data["user_message"]
+                assistant = chunk_data["assistant"]
+                # logger.debug("#_extract_content," + assistant)
+                return assistant
             
             if chunk_data.get("choices"):
                 # 检查是否有完成标志
@@ -393,11 +428,12 @@ async def stream_and_save(
     user_message: UserMessage,
     model: str,
     litellm_user_id: str,
-    conversation_history_manager: ConversationHistoryManager
+    conversation_history_manager: ConversationHistoryManager,
+    useAiLocal: bool = False
 ) -> AsyncGenerator[str, None]:
     """处理流式响应并保存消息"""
     
-    event_manager = StreamEventManager(user_message, model)
+    event_manager = StreamEventManager(user_message, model, useAiLocal)
     response_message_id = str(uuid.uuid4())
 
     yield event_manager.format_user_message_event(user_message.text)
@@ -549,6 +585,10 @@ async def chat_completion_with_history(
         logger.info(f"Starting request for model: {model}")
         data = await request.json()
         logger.info(f"Received request data: {data}")
+        # 处理是否使用rag开关
+        enableRAG = data.get("enableRag", False)
+        if enableRAG:
+            return await chat_with_rag(request=request, data = data, model = model, auth_result=auth_result, history_manager=conversation_history_manager)
         # 处理文件
         files = data.get("files", [])
         
@@ -764,7 +804,115 @@ async def chat_completion_with_history(
             handle_error_response(e,user_message,model,wuban_user_id,litellm_user_id,conversation_history_manager),
             media_type="text/event-stream"
         )
-        
+
+
+async def chat_with_rag(
+    request,
+    data,
+    model: str,
+    auth_result: CombinedAuthResult,
+    history_manager: ConversationHistoryManager):
+    logger.info("#chat_with_rag")
+    # 查询映射是否存在
+    conversation_id = data.get("conversationId") or str(uuid.uuid4())
+    db_data = await librechat_router.prisma_client.db.chatmapping.find_unique(
+                where={
+                    "conversation_id": conversation_id
+                }
+            )
+    logger.info("#chat_with_rag,db_data=")
+    chat_id = None
+    if db_data:
+        chat_id = db_data["chat_id"]
+        logger.debug("get chat_id from db")
+    else:
+        # 不存在，调用ailocal的请求创建
+        post_params = {
+            "name": data["text"]
+        }
+        headers = {
+            'Authorization': 'Bearer ' + get_token_from_headers(request),  # 如果需要认证
+        }
+        resp = requests.post(url = f'{AI_LOCAL_HOST}/chat', json=post_params, headers=headers)
+        logger.debug(f'{resp.status_code},{resp.text}')
+        if resp.status_code != 200:
+            raise HTTPException(resp.status_code, "request ailocal failed")
+        chat_id = resp.json()["chat_id"]
+        logger.debug("get chat_id from ailocal,")
+        # 记录到数据库
+        ret = await librechat_router.prisma_client.db.chatmapping.create(data = {
+            "conversation_id": conversation_id,
+            "chat_id": chat_id
+        })
+        logger.debug("create chat_id to db," + str(ret))
+
+    conversation_id = data.get("conversationId") or str(uuid.uuid4())
+    parent_message_id = data.get("parentMessageId") or ConversationHistoryManager.NO_PARENT
+    endpoint = data.get("endpoint") or ""
+    endpoint_type = data.get("endpointType") or ""  # 保留 endpointType
+    model_name = data.get('model')
+    override_parent_message_id = data.get("overrideParentMessageId")
+
+    wuban_user_id = auth_result.wuban_id
+    litellm_user_id = auth_result.litellm_auth.user_id
+    # 创建用户消息对象
+    user_message = UserMessage(
+        text=data["text"],  # 使用text字段
+        user_id=wuban_user_id,
+        model=model_name,
+        files=None,
+        conversation_id=conversation_id,
+        parent_message_id=parent_message_id,
+        endpoint=endpoint,
+        endpoint_type=endpoint_type
+    )
+
+    # 如果存在 overrideParentMessageId，代表目前是修改响应消息 跳过用户消息保存
+    if override_parent_message_id:
+        logger.info(f"Using overrideParentMessageId: {override_parent_message_id}")
+        user_message.message_id = override_parent_message_id
+        logger.info("Skipping user message save due to message override")
+    else:
+        # 只有在非覆盖模式下才保存用户消息
+        logger.info("Saving user message")
+        await history_manager.save_user_message(
+            message=user_message,
+            litellm_user_id=litellm_user_id
+        )
+
+    #发起流式rag请求
+    post_params = {
+        "question": data["text"]
+    }
+    headers = {
+        'Authorization': 'Bearer ' + get_token_from_headers(request),  # 如果需要认证
+    }
+    response = requests.post(url = f'{AI_LOCAL_HOST}/chat/{chat_id}/question/stream', json = post_params, headers=headers, stream=True)
+    logger.info("Processing streaming response")
+
+    # def transform_ailocal_to_litellm():
+
+    def generate_chunks():
+        try:
+            for chunk in response.iter_content(chunk_size=1024):
+                if chunk:
+                    yield chunk
+        finally:
+            response.close()
+    streaming_response = StreamingResponse(generate_chunks(), media_type="application/octet-stream")
+    return StreamingResponse(
+        stream_and_save(
+            response=streaming_response,
+            user_message=user_message,
+            model=model_name,
+            litellm_user_id=litellm_user_id,
+            conversation_history_manager=history_manager,
+            useAiLocal = True
+        ),
+        media_type=streaming_response.media_type
+    )
+
+
 
 # 创建 WubanUserService 实例
 user_service = WubanUserService()

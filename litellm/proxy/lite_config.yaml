@@ -1,16 +1,4 @@
 model_list:
-  - model_name: openAI/together_ai/mistralai/Mixtral-8x7B-Instruct-v0.1
-    litellm_params:
-      model: together_ai/mistralai/Mixtral-8x7B-Instruct-v0.1
-      api_key: os.environ/TOGETHER_API_KEY
-      rpm: 3
-      timeout: 30
-      stream_timeout: 30
-      temperature: 0.7
-      max_tokens: 100
-      top_p: 0.9
-      owned_by: openAI
-      capabilities: ["text"]
   - model_name: deepseek/deepseek/deepseek-chat
     litellm_params:
       model: deepseek/deepseek-chat

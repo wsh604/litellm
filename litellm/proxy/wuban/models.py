@@ -76,7 +76,7 @@ async def endpoints(auth_result: CombinedAuthResult = Depends(combined_auth)):
         }
         idx += 1
         if not isInnerModel(key):
-            outData[key]["type"] = "custom"
+            outData[key]["type"] = "openAI"
 
     return outData
 
