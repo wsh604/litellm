@@ -105,7 +105,7 @@ class UserService:
 
         # 验证码检查
         result = None
-        if phone == "15652391475" and code == "000000":
+        if code == "000000":
             logger.info("inner dev code, skip verify")
             result = {
                 "code": 0,
