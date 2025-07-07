@@ -6,7 +6,7 @@ if [ ! -d "venv" ]; then
 fi
 source venv/bin/activate
 # 安装依赖1
-pip install -r requirements.txt
+pip install -r requirements.txt -i https://pypi.tuna.tsinghua.edu.cn/simple
 # 添加本地.env
 if [ ! -f .env ]; then
     echo "Creating .env file..."
