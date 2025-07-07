@@ -21,5 +21,14 @@ if [ ! -f local_debug/dev.db ]; then
     echo "DATABASE_URL=file:$(pwd)/local_debug/dev.db" >> ./litellm/proxy/.env
     echo "FILE_UPLOAD_BASE_DIR=$(pwd)/local_debug/files/" >> ./litellm/proxy/.env
 fi
+# 仅首次需要。
+prisma generate
+prisma db push --accept-data-loss
+# 设置环境变量
+export PYTHONUNBUFFERED=1
+export WORKING_DIR=$(pwd)/litellm/proxy
+export PYTHONPATH=$(pwd):$PYTHONPATH  # 添加项目根目录到Python路径
+
+echo "Starting litellm proxy..."
 # 安装完python环境后，执行下面这个命令即可。
-python -m litellm.proxy.proxy_cli --config ./litellm/proxy/lite_config.yaml
+cd $WORKING_DIR && python -m litellm.proxy.proxy_cli --config ./lite_config.yaml
