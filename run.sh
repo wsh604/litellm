@@ -22,8 +22,8 @@ if [ ! -f local_debug/dev.db ]; then
     echo "FILE_UPLOAD_BASE_DIR=$(pwd)/local_debug/files/" >> ./litellm/proxy/.env
 fi
 # 仅首次需要。
-prisma generate
-prisma db push --accept-data-loss
+#prisma generate
+#prisma db push --accept-data-loss
 # 设置环境变量
 export PYTHONUNBUFFERED=1
 export WORKING_DIR=$(pwd)/litellm/proxy
